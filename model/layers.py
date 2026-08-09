@@ -15,14 +15,17 @@ class LayerNorm(nn.Module):
         mean = x.mean(-1, keepdim=True)
         std = x.std(-1, keepdim=True)
         return self.gamma * (x - mean) / (std + self.eps) + self.beta
+
+
 class PositionalEncoding(nn.Module):
     def __init__(self, dim:int, max_len:int =1024):
+        super().__init__()
         pe = torch.zeros(max_len, dim)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         dim_term=torch.exp(torch.arange(0, dim, 2).float() * (-torch.log(torch.tensor(10000.0)) / dim))
         pe[:, 0::2] = torch.sin(position * dim_term)
         pe[:, 1::2] = torch.cos(position * dim_term)
-        self.register_buffer('pe', pe)
+        self.register_buffer('pe', pe.unsqueeze(0))
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1)]
+        return x + self.pe[:, :x.size(1)]
