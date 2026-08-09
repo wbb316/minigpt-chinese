@@ -29,3 +29,14 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         return x + self.pe[:, :x.size(1)]
+
+class FeedForward(nn.Module):
+    def __init__(self, dim:int):
+        super().__init__()
+        self.fc1=nn.Linear(dim, 4*dim)
+        self.fc2=nn.Linear(4*dim, dim)
+
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        x=self.fc1(x)
+        x=torch.relu(x)
+        return self.fc2(x)
