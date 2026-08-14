@@ -27,3 +27,19 @@ def test_bpe_roundtrip():
     encoded = tokenizer.encode(text)
     decoded = tokenizer.decode(encoded)
     assert decoded == text, f"roundtrip 失败: {decoded} != {text}"
+
+
+def test_chinese_merges_reduce_tokens():
+    """中文：合并后 token 数应比原始字节数少（说明合并生效）。"""
+    tokenizer = BPETokenizer(vocab_size=256 + 50)
+    text = "人工智能技术正在快速发展，人工智能改变世界。" * 50
+    tokenizer.train(text)
+
+    encoded = tokenizer.encode("人工智能技术")
+    raw_bytes = len("人工智能技术".encode('utf-8'))
+    assert len(encoded) < raw_bytes, f"中文未合并: {len(encoded)} 字节 vs 原始 {raw_bytes}"
+    assert tokenizer.decode(encoded) == "人工智能技术", "解码未能还原中文"
+
+    # 看合并出了什么（供观察，不参与断言）
+    merged = tokenizer.decode([list(tokenizer.merges.keys())[-1][0]]) if tokenizer.merges else ""
+    print(f"\n'人工智能技术' 原始 {raw_bytes} 字节 -> 编码后 {len(encoded)} 个 token, 解码还原: {tokenizer.decode(encoded)}")
