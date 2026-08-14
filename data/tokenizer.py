@@ -15,6 +15,8 @@ class BPETokenizer:
         while len(vocab)<self.vocab_size:
             # ③ 统计相邻对（用你答的 zip 方法！）
             counts=Counter(zip(ids,ids[1:]))
+            if not counts:
+                break
             # ④ 找出出现最多的对
             pair=max(counts,key=counts.get)
             # ⑤ 合并：把 ids 里所有 (a,b) 替换成新 id
@@ -55,5 +57,5 @@ class BPETokenizer:
     def decode(self, ids: list[int]) -> str:
         # TODO: 每个 id 查 vocab，拼接字节，转回文本
         # 提示：b''.join(self.vocab[i] for i in ids).decode('utf-8')
-        tokens=b''.join(self.vocab[i] for i in ids).decode('utf-8')
+        tokens=b''.join(self.vocab[i] for i in ids).decode('utf-8', errors='replace')
         return tokens

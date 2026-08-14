@@ -31,7 +31,7 @@ class GPT(nn.Module):
 
     def forward(self, x :torch.Tensor) -> torch.Tensor:
         B,T=x.shape
-        assert T<self.block_size
+        assert T <= self.block_size
         x = self.token_emb(x)
         x= self.pos_emb(x)
         for block in self.blocks:
