@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from model.layers import LayerNorm,PositionalEncoding,FeedForward
+from model.layers import LayerNorm, PositionalEncoding, FeedForward
 from model.attention import MultiHeadAttention
 
 class Block(nn.Module):
@@ -31,7 +31,7 @@ class GPT(nn.Module):
 
     def forward(self, x :torch.Tensor) -> torch.Tensor:
         B,T=x.shape
-        assert T <= self.block_size
+        assert T<=self.block_size
         x = self.token_emb(x)
         x= self.pos_emb(x)
         for block in self.blocks:
@@ -40,7 +40,6 @@ class GPT(nn.Module):
         x=self.head(x)
         return x
 
-    def get_num_params(self) -> int:
-        """返回模型参数量（调试/实验报告用）。"""
+    def get_num_params(self):
         return sum(p.numel() for p in self.parameters())
 
