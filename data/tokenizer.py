@@ -15,8 +15,6 @@ class BPETokenizer:
         while len(vocab)<self.vocab_size:
             # ③ 统计相邻对（用你答的 zip 方法！）
             counts=Counter(zip(ids,ids[1:]))
-            if not counts:
-                break
             # ④ 找出出现最多的对
             pair=max(counts,key=counts.get)
             # ⑤ 合并：把 ids 里所有 (a,b) 替换成新 id

@@ -17,11 +17,33 @@ def clean_text(text: str) -> str:
 
 
 if __name__ == '__main__':
-    # 读 GBK → 清洗 → 存 UTF-8
-    with open('D:/迅雷下载/2751.txt', encoding='gbk', errors='ignore') as f:
-        raw = f.read()
-    cleaned = clean_text(raw)
-    # 存成 UTF-8 的语料文件
+    # 多本书合并清洗：读 GBK → 清洗 → 存 UTF-8
+    book_files = [
+        # 原 4 本
+        'D:/迅雷下载/2896.txt',    # 78.8万字
+        'D:/迅雷下载/2806.txt',    # 15.0万字
+        'D:/迅雷下载/110290.txt',  # 8.6万字
+        'D:/迅雷下载/2751.txt',    # 100万字
+        # 新增 5 本
+        'D:/迅雷下载/2635.txt',    # 103.8万字
+        'D:/迅雷下载/3519.txt',    # 116.4万字
+        'D:/迅雷下载/3585.txt',    # 54.2万字
+        'D:/迅雷下载/3653.txt',    # 39.1万字
+        'D:/迅雷下载/3763.txt',    # 34.6万字
+    ]
+    all_raw, all_cleaned = 0, 0
+    parts = []
+    for path in book_files:
+        with open(path, encoding='gbk', errors='ignore') as f:
+            raw = f.read()
+        cleaned = clean_text(raw)
+        parts.append(cleaned)
+        print(f'{path}: {len(raw)} → {len(cleaned)} 字符')
+        all_raw += len(raw)
+        all_cleaned += len(cleaned)
+
+    # 合并所有书，用分隔符隔开
+    combined = '\n'.join(parts)
     with open('D:/WBB_Python/pytorch/data/corpus.txt', 'w', encoding='utf-8') as f:
-        f.write(cleaned)
-    print(f'清洗完成: {len(raw)} 字符 → {len(cleaned)} 字符')
+        f.write(combined)
+    print(f'合计: {all_raw} → {all_cleaned} 字符，已存 corpus.txt')
