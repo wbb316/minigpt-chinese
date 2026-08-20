@@ -5,6 +5,7 @@ from model.gpt import GPT
 from data.dataset import TextDataset
 import pickle
 import os
+from tqdm import tqdm
 
 # 自动选择设备：有 GPU 用 GPU，没有用 CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -48,7 +49,9 @@ for epoch in range(10):
     # ========== 训练 ==========
     gpt.train()
     total_loss=0
-    for i,(x,y) in enumerate(train_loader):
+    # 进度条：显示当前 epoch 内的训练进度 + 预计剩余时间
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch}", unit="step", ncols=100)
+    for i,(x,y) in enumerate(pbar):
         x, y = x.to(device), y.to(device)
         # 混合精度：前向用半精度（4090 支持，快 1.5-2 倍）
         with torch.cuda.amp.autocast():
@@ -59,8 +62,9 @@ for epoch in range(10):
         scaler.step(optimizer)
         scaler.update()
         total_loss+=loss.item()
-        if i%200==0:
-            print(f"epoch {epoch}, step {i}, loss {loss.item():.3f}")
+        # 在进度条后显示当前 loss
+        pbar.set_postfix(loss=f"{loss.item():.3f}")
+    pbar.close()
     avg_loss = total_loss / len(train_loader)
 
     # ========== 验证（不更新参数，只算 loss）==========
