@@ -16,9 +16,9 @@ os.makedirs('../result', exist_ok=True)
 with open('../data/corpus.txt', encoding='utf-8') as f:
     text=f.read()
 print(f'语料长度：{len(text)}')
-tokenizer = BPETokenizer(vocab_size=256+1200)
-# 从语料不同位置均匀采样30万字训练分词器（比只取开头更均衡）
-sample_parts = [text[s:s+75000] for s in range(0, len(text), len(text)//4)]
+tokenizer = BPETokenizer(vocab_size=256+3000)   # 词表 3256
+# 从语料不同位置均匀采样80万字训练分词器（词表3256，需要更多数据支撑合并）
+sample_parts = [text[s:s+200000] for s in range(0, len(text), len(text)//4)]
 tokenizer.train(''.join(sample_parts))
 print(f'tokenizer词表大小：{len(tokenizer.vocab)}')
 tokens=tokenizer.encode(text)
@@ -34,26 +34,30 @@ print(f"训练集 {len(train_tokens)} token, 验证集 {len(val_tokens)} token")
 
 train_ds = TextDataset(tokens=train_tokens, block_size=block_size)
 val_ds = TextDataset(tokens=val_tokens, block_size=block_size)
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-val_loader = torch.utils.data.DataLoader(val_ds, batch_size=256, shuffle=False, num_workers=4, pin_memory=True)
-print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 256 个")
+train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
+val_loader = torch.utils.data.DataLoader(val_ds, batch_size=512, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
+print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 512 个")
 
-gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=6,n_head=8,n_embd=256)
+gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256)   # 10层 = 9.6M参数
 gpt = gpt.to(device)
 optimizer=torch.optim.AdamW(gpt.parameters(),lr=1e-3)
+scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
-for epoch in range(15):
+for epoch in range(10):
     # ========== 训练 ==========
     gpt.train()
     total_loss=0
     for i,(x,y) in enumerate(train_loader):
         x, y = x.to(device), y.to(device)
-        logits=gpt(x)
-        loss=F.cross_entropy(logits.view(-1,logits.size(-1)),y.view(-1))
+        # 混合精度：前向用半精度（4090 支持，快 1.5-2 倍）
+        with torch.cuda.amp.autocast():
+            logits=gpt(x)
+            loss=F.cross_entropy(logits.view(-1,logits.size(-1)),y.view(-1))
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()   # 用 scaler 缩放梯度
+        scaler.step(optimizer)
+        scaler.update()
         total_loss+=loss.item()
         if i%200==0:
             print(f"epoch {epoch}, step {i}, loss {loss.item():.3f}")
@@ -65,8 +69,10 @@ for epoch in range(15):
     with torch.no_grad():   # 不计算梯度（省内存）
         for x, y in val_loader:
             x, y = x.to(device), y.to(device)
-            logits = gpt(x)
-            val_loss += F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1)).item()
+            with torch.cuda.amp.autocast():
+                logits = gpt(x)
+                loss_val = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+            val_loss += loss_val.item()
     val_loss /= len(val_loader)
 
     print(f"epoch {epoch} 平均 loss: {avg_loss:.3f}, val loss: {val_loss:.3f}")
