@@ -59,7 +59,7 @@ optimizer=torch.optim.AdamW(gpt.parameters(),lr=2e-3)   # batch 翻倍，lr 也�
 scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
-for epoch in range(5):   # 减到5轮，防过拟合（val loss 升就早停）
+for epoch in range(10):   # 10轮（数据充足后不过拟合）
     # ========== 训练 ==========
     gpt.train()
     total_loss=0
