@@ -53,13 +53,13 @@ train_loader = torch.utils.data.DataLoader(train_ds, batch_size=1024, shuffle=Tr
 val_loader = torch.utils.data.DataLoader(val_ds, batch_size=1024, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 512 个")
 
-gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256)   # 10层 = 9.6M参数
+gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.1)   # 10层 = 9.6M + dropout防过拟合
 gpt = gpt.to(device)
 optimizer=torch.optim.AdamW(gpt.parameters(),lr=2e-3)   # batch 翻倍，lr 也翻倍
 scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
-for epoch in range(10):
+for epoch in range(5):   # 减到5轮，防过拟合（val loss 升就早停）
     # ========== 训练 ==========
     gpt.train()
     total_loss=0

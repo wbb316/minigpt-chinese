@@ -4,10 +4,10 @@ from model.layers import LayerNorm, PositionalEncoding, FeedForward
 from model.attention import MultiHeadAttention
 
 class Block(nn.Module):
-    def __init__(self,dim,n_head):
+    def __init__(self,dim,n_head,dropout=0.0):
         super().__init__()
         self.ln1 = LayerNorm(dim)
-        self.attn= MultiHeadAttention(dim,n_head)
+        self.attn= MultiHeadAttention(dim,n_head,dropout=dropout)   # ★ 传 dropout
         self.ln2 = LayerNorm(dim)
         self.ff= FeedForward(dim)
 
@@ -25,7 +25,7 @@ class GPT(nn.Module):
         self.vocab_size = vocab_size
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
-        self.blocks=nn.ModuleList([Block(n_embd,n_head) for _ in range(n_layer)])
+        self.blocks=nn.ModuleList([Block(n_embd,n_head,dropout=dropout) for _ in range(n_layer)])   # ★ 传 dropout
         self.ln=LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
         self.head=nn.Linear(n_embd,vocab_size)
 
