@@ -39,7 +39,7 @@ else:
     np.save(cache_path, np.array(tokens))
     print(f"编码完成并缓存: {len(text)} 字符 → {len(tokens)} token ({cache_path})")
 
-block_size=64
+block_size=128
 
 # ★ 数据划分：训练集 90%、验证集 10%（判断过拟合的关键）
 split = int(len(tokens) * 0.9)
@@ -49,13 +49,13 @@ print(f"训练集 {len(train_tokens)} token, 验证集 {len(val_tokens)} token")
 
 train_ds = TextDataset(tokens=train_tokens, block_size=block_size)
 val_ds = TextDataset(tokens=val_tokens, block_size=block_size)
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=1024, shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
-val_loader = torch.utils.data.DataLoader(val_ds, batch_size=1024, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
+train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
+val_loader = torch.utils.data.DataLoader(val_ds, batch_size=512, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 512 个")
 
 gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.1)   # 10层 = 9.6M + dropout防过拟合
 gpt = gpt.to(device)
-optimizer=torch.optim.AdamW(gpt.parameters(),lr=2e-3)   # batch 翻倍，lr 也翻倍
+optimizer=torch.optim.AdamW(gpt.parameters(),lr=1e-3)   # batch 512，lr 1e-3
 scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
