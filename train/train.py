@@ -1,10 +1,14 @@
+import sys
+import os
+# ★ 让 Python 能找到上级目录的 data/model 包（train.py 在子目录运行）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import torch.nn.functional as F
 from data.tokenizer import BPETokenizer
 from model.gpt import GPT
 from data.dataset import TextDataset
 import pickle
-import os
 from tqdm import tqdm
 
 # 自动选择设备：有 GPU 用 GPU，没有用 CPU
@@ -22,8 +26,18 @@ tokenizer = BPETokenizer(vocab_size=256+3000)   # 词表 3256
 sample_parts = [text[s:s+200000] for s in range(0, len(text), len(text)//4)]
 tokenizer.train(''.join(sample_parts))
 print(f'tokenizer词表大小：{len(tokenizer.vocab)}')
-tokens=tokenizer.encode(text)
-print(f"编码完成: {len(text)} 字符 → {len(tokens)} token")
+
+# ★ 编码缓存：文件名带词表大小（防止不同词表的 token 混用）
+import numpy as np
+vocab_size = len(tokenizer.vocab)
+cache_path = f'../data/tokens_cache_v{vocab_size}.npy'
+if os.path.exists(cache_path):
+    tokens = np.load(cache_path).tolist()
+    print(f"从缓存加载 {len(tokens)} token ({cache_path})")
+else:
+    tokens = tokenizer.encode(text)
+    np.save(cache_path, np.array(tokens))
+    print(f"编码完成并缓存: {len(text)} 字符 → {len(tokens)} token ({cache_path})")
 
 block_size=64
 
