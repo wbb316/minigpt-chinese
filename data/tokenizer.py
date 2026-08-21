@@ -57,22 +57,33 @@ class BPETokenizer:
                 i += 1
         return new_ids
 
-    def encode(self, text: str) -> list[int]:
-        """文本 → token id 列表。遇到未知字节用 <unk> 兜底。"""
-        raw = text.encode('utf-8', errors='ignore')  # 忽略无法编码的
+    def encode(self, text: str, verbose=False) -> list[int]:
+        """文本 → token id 列表。O(N) 单次扫描（标准 BPE encode）。
+
+        算法：从左到右读 token 压入栈，每次压入后检查栈顶两个能否合并；
+        能合并就弹出合并，再检查新栈顶（可连续合并）；不能就继续读下一个。
+        每个 token 只处理一次 → O(N)，而不是 O(N×M)。
+        """
+        raw = text.encode('utf-8', errors='ignore')
         ids = [b + NUM_SPECIAL for b in raw]
-        # 检查是否有词表外的 token，用 <unk> 兜底
+        # <unk> 兜底
         ids = [i if i in self.vocab else UNK_ID for i in ids]
 
-        # 合并
-        while len(ids) >= 2:
-            count = Counter(zip(ids, ids[1:]))
-            pair = min(count, key=lambda p: self.merges.get(p, float("inf")))
-            if pair not in self.merges:
-                break
-            idx = self.merges[pair]
-            ids = self._merge(ids, pair, idx)
-        return ids
+        # 用列表当栈：始终尝试合并栈顶两个
+        stack = []
+        for token in ids:
+            stack.append(token)
+            # 不断尝试合并栈顶（因为合并后可能出现新的可合并对）
+            while len(stack) >= 2:
+                pair = (stack[-2], stack[-1])
+                if pair in self.merges:
+                    new_id = self.merges[pair]
+                    stack.pop()      # 弹出两个
+                    stack.pop()
+                    stack.append(new_id)  # 压入合并结果
+                else:
+                    break  # 栈顶不可合并，停下继续读下一个
+        return stack
 
     def decode(self, ids: list[int]) -> str:
         """token id 列表 → 文本。特殊 token 用名字显示。"""
