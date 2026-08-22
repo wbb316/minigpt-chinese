@@ -59,6 +59,11 @@ optimizer=torch.optim.AdamW(gpt.parameters(),lr=8e-4,weight_decay=0.01)   # lr�
 scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
+# ★ 早停参数（方案A：连续2轮val不改善就停）
+best_val = float('inf')     # 历史最好 val loss
+patience = 2                # 容忍连续几轮不改善
+no_improve_count = 0
+
 for epoch in range(10):   # 10轮（数据充足后不过拟合）
     # ========== 训练 ==========
     gpt.train()
@@ -95,14 +100,27 @@ for epoch in range(10):   # 10轮（数据充足后不过拟合）
 
     print(f"epoch {epoch} 平均 loss: {avg_loss:.3f}, val loss: {val_loss:.3f}")
 
-    # ★ 判断过拟合
-    if epoch > 0:
-        pass  # 过拟合判断：看 val_loss 是否回升（可在外面分析）
+    # ★ 早停判断：val 改善了就保存最好模型；连续 patience 轮不改善就停
+    if val_loss < best_val:
+        best_val = val_loss
+        no_improve_count = 0
+        # 保存最好的模型（早停后加载这个，不是过拟合的最后轮）
+        torch.save(gpt.state_dict(), '../result/checkpoint_best.pt')
+        with open('../result/tokenizer_best.pkl', 'wb') as f:
+            pickle.dump(tokenizer, f)
+        print(f"  ✓ 新最好模型已保存 (val {val_loss:.3f})")
+    else:
+        no_improve_count += 1
+        print(f"  ⚠️ val 未改善 ({no_improve_count}/{patience})")
 
-    # ★ 每轮保存一次（防止中途崩白跑）
-    torch.save(gpt.state_dict(), '../result/checkpoint_baseline.pt')
-    with open('../result/tokenizer_baseline.pkl', 'wb') as f:
+    # 每轮也保存一个"最近" checkpoint（防中断白跑）
+    torch.save(gpt.state_dict(), '../result/checkpoint_latest.pt')
+    with open('../result/tokenizer_latest.pkl', 'wb') as f:
         pickle.dump(tokenizer, f)
-    print(f"  ✓ epoch {epoch} 已保存 (result/checkpoint.pt)")
 
-print("训练完成，模型已保存: result/checkpoint_baseline.pt + result/tokenizer_baseline.pkl")
+    # 早停触发
+    if no_improve_count >= patience:
+        print(f"🚫 早停: val loss 连续 {patience} 轮未改善，停止训练")
+        break
+
+print("训练结束。最好模型: result/checkpoint_best.pt（val 最低）")
