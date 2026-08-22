@@ -22,8 +22,8 @@ with open('../data/corpus.txt', encoding='utf-8') as f:
     text=f.read()
 print(f'语料长度：{len(text)}')
 tokenizer = BPETokenizer(vocab_size=256+4096)   # 词表 4352
-# 从语料不同位置均匀采样100万字训练分词器（5处 × 0.2M）
-sample_parts = [text[s:s+200000] for s in range(0, len(text), len(text)//5)]
+# 从语料均匀采样100万字训练分词器（50段 × 20k，覆盖更分散、多样性更好）
+sample_parts = [text[s:s+20000] for s in range(0, len(text), len(text)//50)]
 tokenizer.train(''.join(sample_parts))
 print(f'tokenizer词表大小：{len(tokenizer.vocab)}')
 
