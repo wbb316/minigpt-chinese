@@ -21,7 +21,7 @@ os.makedirs('../result', exist_ok=True)
 with open('../data/corpus.txt', encoding='utf-8') as f:
     text=f.read()
 print(f'语料长度：{len(text)}')
-tokenizer = BPETokenizer(vocab_size=256+4096)   # 词表 4352
+tokenizer = BPETokenizer(vocab_size=256+3000)   # 词表 3256
 # 从语料均匀采样100万字训练分词器（50段 × 20k，覆盖更分散、多样性更好）
 sample_parts = [text[s:s+20000] for s in range(0, len(text), len(text)//50)]
 tokenizer.train(''.join(sample_parts))
@@ -53,9 +53,9 @@ train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=Tru
 val_loader = torch.utils.data.DataLoader(val_ds, batch_size=512, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 512 个")
 
-gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.1)   # 词表4352，10层
+gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.2)   # 词表3256，dropout强化
 gpt = gpt.to(device)
-optimizer=torch.optim.AdamW(gpt.parameters(),lr=1e-3)   # batch 512，lr 1e-3
+optimizer=torch.optim.AdamW(gpt.parameters(),lr=8e-4,weight_decay=0.01)   # lr降+weight_decay防过拟合
 scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
