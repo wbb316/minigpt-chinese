@@ -56,7 +56,7 @@ print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}�
 gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.2)   # 词表3256，dropout强化
 gpt = gpt.to(device)
 optimizer=torch.optim.AdamW(gpt.parameters(),lr=8e-4,weight_decay=0.01)   # lr降+weight_decay防过拟合
-scaler = torch.cuda.amp.GradScaler()   # 混合精度的梯度缩放器
+scaler = torch.amp.GradScaler('cuda')   # 混合精度的梯度缩放器（新API）
 print(f"GPT 参数量: {gpt.get_num_params()}")
 
 # ★ 早停参数（方案A：连续2轮val不改善就停）
@@ -73,7 +73,7 @@ for epoch in range(10):   # 10轮（数据充足后不过拟合）
     for i,(x,y) in enumerate(pbar):
         x, y = x.to(device), y.to(device)
         # 混合精度：前向用半精度（4090 支持，快 1.5-2 倍）
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             logits=gpt(x)
             loss=F.cross_entropy(logits.view(-1,logits.size(-1)),y.view(-1))
         optimizer.zero_grad()
@@ -92,13 +92,13 @@ for epoch in range(10):   # 10轮（数据充足后不过拟合）
     with torch.no_grad():   # 不计算梯度（省内存）
         for x, y in val_loader:
             x, y = x.to(device), y.to(device)
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 logits = gpt(x)
                 loss_val = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             val_loss += loss_val.item()
     val_loss /= len(val_loader)
 
-    print(f"epoch {epoch} 平均 loss: {avg_loss:.3f}, val loss: {val_loss:.3f}")
+    tqdm.write(f"\n===== epoch {epoch} 平均 loss: {avg_loss:.3f}, val loss: {val_loss:.3f} =====")
 
     # ★ 早停判断：val 改善了就保存最好模型；连续 patience 轮不改善就停
     if val_loss < best_val:
@@ -108,10 +108,10 @@ for epoch in range(10):   # 10轮（数据充足后不过拟合）
         torch.save(gpt.state_dict(), '../result/checkpoint_best.pt')
         with open('../result/tokenizer_best.pkl', 'wb') as f:
             pickle.dump(tokenizer, f)
-        print(f"  ✓ 新最好模型已保存 (val {val_loss:.3f})")
+        tqdm.write(f"  ✓ 新最好模型已保存 (val {val_loss:.3f})")
     else:
         no_improve_count += 1
-        print(f"  ⚠️ val 未改善 ({no_improve_count}/{patience})")
+        tqdm.write(f"  ⚠️ val 未改善 ({no_improve_count}/{patience})")
 
     # 每轮也保存一个"最近" checkpoint（防中断白跑）
     torch.save(gpt.state_dict(), '../result/checkpoint_latest.pt')
@@ -120,7 +120,7 @@ for epoch in range(10):   # 10轮（数据充足后不过拟合）
 
     # 早停触发
     if no_improve_count >= patience:
-        print(f"🚫 早停: val loss 连续 {patience} 轮未改善，停止训练")
+        tqdm.write(f"🚫 早停: val loss 连续 {patience} 轮未改善，停止训练")
         break
 
-print("训练结束。最好模型: result/checkpoint_best.pt（val 最低）")
+tqdm.write("训练结束。最好模型: result/checkpoint_best.pt（val 最低）")
