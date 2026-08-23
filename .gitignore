@@ -7,3 +7,10 @@ venv/
 checkpoints/
 data/raw/
 .pytest_cache/
+
+# 大数据文件不进 git（语料/缓存）
+data/corpus.txt
+data/train.txt
+data/val.txt
+data/tokens_*.npy
+data/*_v*.npy
