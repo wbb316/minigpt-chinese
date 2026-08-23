@@ -49,5 +49,5 @@ if __name__ == '__main__':
     plot(e, l, 'MiniGPT-Chinese Training Loss (Baseline A: 5.5M/505万)', 'result/training_loss_curve.png')
 
     # 画 B 组（小模型）
-    e, l = from_csv('result/loss_history_b.csv')
+    e, l = from_csv('log/loss_history_b.csv')
     plot(e, l, 'Experiment B: Small Model (1.2M/200万)', 'result/training_loss_curve_b.png')

@@ -10,7 +10,7 @@ gpt = GPT(vocab_size=1456, block_size=64, n_layer=6, n_head=8, n_embd=256)
 gpt.load_state_dict(torch.load('result/checkpoint.pt', map_location=device))
 gpt.to(device).eval()
 
-with open('result/tokenizer.pkl', 'rb') as f:
+with open('result/tokenizer_baseline.pkl', 'rb') as f:
     tokenizer = pickle.load(f)
 
 def generate(prompt: str, max_new_tokens: int = 150, temperature: float = 1.0):

@@ -30,13 +30,13 @@ def clean_text(text: str) -> str:
 # 加载模型
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 加载训练好的 GPT（baseline: 5.5M，vocab=1456，6层，256维）
-gpt = GPT(vocab_size=1456, block_size=64, n_layer=6, n_head=8, n_embd=256)
-gpt.load_state_dict(torch.load('../result/checkpoint_baseline.pt', map_location=device))
-gpt.to(device).eval()
-
-with open('../result/tokenizer_baseline.pkl', 'rb') as f:
+# 加载训练好的 GPT（best: 7层，256维，词表3256，序列128）
+with open('../result/tokenizer_best.pkl', 'rb') as f:
     tokenizer = pickle.load(f)
+
+gpt = GPT(vocab_size=len(tokenizer.vocab), block_size=128, n_layer=7, n_head=8, n_embd=256)
+gpt.load_state_dict(torch.load('../result/checkpoint_best.pt', map_location=device))
+gpt.to(device).eval()
 
 # FastAPI 应用
 app = FastAPI()
