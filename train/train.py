@@ -53,7 +53,7 @@ train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=Tru
 val_loader = torch.utils.data.DataLoader(val_ds, batch_size=512, shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 print(f"训练集样本数: {len(train_ds)}，验证集样本数: {len(val_ds)}，每批 512 个")
 
-gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=10,n_head=8,n_embd=256,dropout=0.2)   # 词表3256，dropout强化
+gpt=GPT(vocab_size=len(tokenizer.vocab),block_size=block_size,n_layer=7,n_head=8,n_embd=256,dropout=0.2)   # 7层=7.2M，降参数防过拟合
 gpt = gpt.to(device)
 optimizer=torch.optim.AdamW(gpt.parameters(),lr=8e-4,weight_decay=0.01)   # lr降+weight_decay防过拟合
 scaler = torch.amp.GradScaler('cuda')   # 混合精度的梯度缩放器（新API）
