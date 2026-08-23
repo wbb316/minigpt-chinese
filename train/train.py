@@ -51,6 +51,8 @@ train_tokens = get_tokens(train_text, 'train')
 val_tokens = get_tokens(val_text, 'val')
 print(f"训练集 {len(train_tokens)} token, 验证集 {len(val_tokens)} token")
 
+block_size = 128   # ★ 补回（之前改造时丢了）
+
 train_ds = TextDataset(tokens=train_tokens, block_size=block_size)
 val_ds = TextDataset(tokens=val_tokens, block_size=block_size)
 train_loader = torch.utils.data.DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=4, persistent_workers=True)
