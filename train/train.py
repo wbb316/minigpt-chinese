@@ -18,33 +18,37 @@ print(f'使用设备: {device}')
 # 确保保存目录存在（重要！上次就是这里崩的）
 os.makedirs('../result', exist_ok=True)
 
-with open('../data/corpus.txt', encoding='utf-8') as f:
-    text=f.read()
-print(f'语料长度：{len(text)}')
+# ★ 分别读取 train.txt 和 val.txt（按文件划分，验证集覆盖所有书尾部）
+with open('../data/train.txt', encoding='utf-8') as f:
+    train_text = f.read()
+with open('../data/val.txt', encoding='utf-8') as f:
+    val_text = f.read()
+print(f'训练文本：{len(train_text)} 字符，验证文本：{len(val_text)} 字符')
+
+# 分词器：用训练文本采样200万训练（100段 × 20k）
 tokenizer = BPETokenizer(vocab_size=256+3000)   # 词表 3256
-# 从语料均匀采样200万字训练分词器（100段 × 20k，覆盖更分散、多样性更好）
-sample_parts = [text[s:s+20000] for s in range(0, len(text), len(text)//100)]
+sample_parts = [train_text[s:s+20000] for s in range(0, len(train_text), len(train_text)//100)]
 tokenizer.train(''.join(sample_parts))
 print(f'tokenizer词表大小：{len(tokenizer.vocab)}')
 
-# ★ 编码缓存：文件名带词表大小（防止不同词表的 token 混用）
+# ★ 编码缓存：训练/验证分开缓存（文件名带词表大小）
 import numpy as np
 vocab_size = len(tokenizer.vocab)
-cache_path = f'../data/tokens_cache_v{vocab_size}.npy'
-if os.path.exists(cache_path):
-    tokens = np.load(cache_path).tolist()
-    print(f"从缓存加载 {len(tokens)} token ({cache_path})")
-else:
+
+def get_tokens(text, name):
+    """编码文本，带缓存。"""
+    cache_path = f'../data/tokens_{name}_v{vocab_size}.npy'
+    if os.path.exists(cache_path):
+        tokens = np.load(cache_path).tolist()
+        print(f"从缓存加载 {name}: {len(tokens)} token ({cache_path})")
+        return tokens
     tokens = tokenizer.encode(text)
     np.save(cache_path, np.array(tokens))
-    print(f"编码完成并缓存: {len(text)} 字符 → {len(tokens)} token ({cache_path})")
+    print(f"编码并缓存 {name}: {len(text)} 字符 → {len(tokens)} token")
+    return tokens
 
-block_size=128
-
-# ★ 数据划分：训练集 90%、验证集 10%（判断过拟合的关键）
-split = int(len(tokens) * 0.9)
-train_tokens = tokens[:split]
-val_tokens = tokens[split:]
+train_tokens = get_tokens(train_text, 'train')
+val_tokens = get_tokens(val_text, 'val')
 print(f"训练集 {len(train_tokens)} token, 验证集 {len(val_tokens)} token")
 
 train_ds = TextDataset(tokens=train_tokens, block_size=block_size)
