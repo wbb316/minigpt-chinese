@@ -11,9 +11,14 @@ class Block(nn.Module):
         self.ln2 = LayerNorm(dim)
         self.ff= FeedForward(dim)
 
-    def forward(self, x :torch.Tensor) -> torch.Tensor:
-        x=x+self.attn(self.ln1(x))
-        x=x+self.ff(self.ln2(x))
+    def forward(self, x :torch.Tensor, past_kv=None, return_kv=False):
+        """past_kv: 该层缓存的 (k, v)；return_kv=True 或给了 past_kv 时返回 (x, 新kv)。"""
+        h = self.ln1(x)
+        a, kv = self.attn(h, past_kv=past_kv, return_kv=True)   # 总是同时拿到输出和新kv
+        x = x + a
+        x = x + self.ff(self.ln2(x))
+        if past_kv is not None or return_kv:
+            return x, kv
         return x
 
 
@@ -29,17 +34,38 @@ class GPT(nn.Module):
         self.ln=LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
         self.head=nn.Linear(n_embd,vocab_size)
 
-    def forward(self, x :torch.Tensor) -> torch.Tensor:
+    def forward(self, x :torch.Tensor, past_kvs=None, return_kv=False):
+        """GPT 前向（支持 KV cache 增量推理）。
+
+        - past_kvs: 各层的缓存列表 [(k, v), ...]，每项 (B, H, T_prev, head_dim)。
+          给定时输入 x 只需是新 token（T 很小），位置编码从缓存长度偏移。
+        - return_kv=True 或给了 past_kvs 时返回 (logits, new_kvs)，否则只返回 logits。
+
+        past_kvs=None 且 return_kv=False 时与原来行为完全一致。
+        """
         B,T=x.shape
         assert T<=self.block_size
         x = self.token_emb(x)
-        x= self.pos_emb(x)
-        for block in self.blocks:
-            x = block(x)
+        if past_kvs is not None:
+            # 新 token 的真实全局位置 = 缓存的历史长度
+            start = past_kvs[0][0].size(2)
+            x = self.pos_emb(x, start=start)
+        else:
+            x = self.pos_emb(x)
+
+        new_kvs = []
+        for i, block in enumerate(self.blocks):
+            if past_kvs is not None:
+                x, kv = block(x, past_kvs[i], return_kv=True)
+            else:
+                x, kv = block(x, return_kv=True)
+            new_kvs.append(kv)
         x = self.ln(x)
         x=self.head(x)
+
+        if past_kvs is not None or return_kv:
+            return x, new_kvs
         return x
 
     def get_num_params(self):
         return sum(p.numel() for p in self.parameters())
-

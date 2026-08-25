@@ -26,8 +26,9 @@ class PositionalEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position * dim_term)
         self.register_buffer('pe', pe.unsqueeze(0))
 
-    def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
+    def forward(self, x, start: int = 0):
+        """start: 起始位置偏移（KV cache 增量解码时，新 token 的全局位置 = 缓存长度）。"""
+        return x + self.pe[:, start:start + x.size(1)]
 
 
 class FeedForward(nn.Module):
