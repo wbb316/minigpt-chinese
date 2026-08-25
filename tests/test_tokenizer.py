@@ -10,7 +10,8 @@ def test_bpe_merges_common_pairs():
     tokenizer.train(text)
 
     # 验证：合并规则里有 (a, b) 这一对（因为 ab 反复出现）
-    assert (97, 98) in tokenizer.merges, "ab 应该被合并，但没找到合并规则"
+    # 字节 'a'=97, 'b'=98，偏移 NUM_SPECIAL=2 后是 (99, 100)
+    assert (99, 100) in tokenizer.merges, "ab 应该被合并，但没找到合并规则"
 
     # 验证：encode 后 ab 是一个 token
     encoded = tokenizer.encode("ababab")
