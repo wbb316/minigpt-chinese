@@ -9,7 +9,7 @@ class Block(nn.Module):
         self.ln1 = LayerNorm(dim)
         self.attn= MultiHeadAttention(dim,n_head,dropout=dropout)   # ★ 传 dropout
         self.ln2 = LayerNorm(dim)
-        self.ff= FeedForward(dim)
+        self.ff= FeedForward(dim, dropout=dropout)                  # ★ FFN 也加 dropout
 
     def forward(self, x :torch.Tensor, past_kv=None, return_kv=False):
         """past_kv: 该层缓存的 (k, v)；return_kv=True 或给了 past_kv 时返回 (x, 新kv)。"""
@@ -30,6 +30,7 @@ class GPT(nn.Module):
         self.vocab_size = vocab_size
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
+        self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
         self.blocks=nn.ModuleList([Block(n_embd,n_head,dropout=dropout) for _ in range(n_layer)])   # ★ 传 dropout
         self.ln=LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
         self.head=nn.Linear(n_embd,vocab_size)
@@ -52,6 +53,7 @@ class GPT(nn.Module):
             x = self.pos_emb(x, start=start)
         else:
             x = self.pos_emb(x)
+        x = self.drop(x)   # ★ embedding dropout（token+pos 求和后）
 
         new_kvs = []
         for i, block in enumerate(self.blocks):
