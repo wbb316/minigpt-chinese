@@ -90,6 +90,8 @@ def main():
     parser.add_argument('--val-txt', default='data/val_lightnovel.txt')
     parser.add_argument('--out-dir', default='result')
     parser.add_argument('--cache-dir', default='data')
+    parser.add_argument('--log-dir', default='log',
+                        help='验证历史 CSV 输出目录（默认 log/，文件名带语料名自动区分）')
     parser.add_argument('--vocab-size', type=int, default=6144,
                         help='词表总大小 = 256字节 + merges；6.4M 参数推荐 6144（配 tie 嵌入防嵌入层过大）')
     parser.add_argument('--tokens-sample', type=int, default=4_000_000,
@@ -316,26 +318,54 @@ def main():
     ema = None
     stopped = False
 
+    # ---------- 验证历史 CSV（每次验证追加一行，resume 续训也接着记） ----------
+    val_csv_path = os.path.join(
+        resolve(args.log_dir),
+        f"val_history_{os.path.splitext(os.path.basename(args.train_txt))[0]}.csv")
+    os.makedirs(os.path.dirname(val_csv_path), exist_ok=True)
+    csv_header = ('step,where,val,train_eval,gap,lr,is_best,no_improve,'
+                  'best_val,wall_time')
+    if not os.path.exists(val_csv_path) or os.path.getsize(val_csv_path) == 0:
+        with open(val_csv_path, 'w', encoding='utf-8') as f:
+            f.write(csv_header + '\n')
+        print(f'📈 验证历史将记录到: {val_csv_path}')
+
+    import time as _time
+    def log_validation_row(where, val_loss, train_ev, gap, lr, is_best):
+        """把一次验证结果追加到 CSV（终端照常打印，这里额外留档）。"""
+        row = (f'{global_step},{where},{val_loss:.4f},'
+               f'{train_ev if train_ev is not None else ""},'
+               f'{gap if gap is not None else ""},{lr:.2e},'
+               f'{int(is_best)},{no_improve},{best_val:.4f},'
+               f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
+        with open(val_csv_path, 'a', encoding='utf-8') as f:
+            f.write(row + '\n')
+
     def run_validation(where):
         """验证一次；返回是否触发早停。"""
         nonlocal best_val, no_improve
         val_loss = eval_loss(val_eval_loader)
         msg = f'[{where}] val {val_loss:.3f}'
+        train_ev = gap = None
         if args.eval_batches > 0:
             train_ev = eval_loss(train_eval_loader)          # eval 模式，无 dropout
             gap = val_loss - train_ev
             msg += f' | train_eval(无dropout) {train_ev:.3f} | gap {gap:+.3f}'
-        msg += f' | lr {scheduler.get_last_lr()[0]:.1e}'
+        lr_now = scheduler.get_last_lr()[0]
+        msg += f' | lr {lr_now:.1e}'
         tqdm.write(f'\n===== step {global_step} {msg} =====')
+        is_best = False
         if val_loss < best_val:
             best_val = val_loss
             no_improve = 0
+            is_best = True
             save_checkpoint('最佳模型', best_path, tok_best_path, full=False)
             tqdm.write(f'  ✓ 新最好模型已保存 (val {val_loss:.3f})')
         else:
             no_improve += 1
             tqdm.write(f'  ⚠️ val 未改善 ({no_improve}/{args.patience})')
         save_checkpoint('最近模型', latest_path, tok_latest_path, full=True)   # 完整续训包
+        log_validation_row(where, val_loss, train_ev, gap, lr_now, is_best)
         if no_improve >= args.patience:
             tqdm.write(f'🚫 早停: val 连续 {args.patience} 次验证未改善，停止训练')
             return True
