@@ -38,7 +38,7 @@ from tqdm import tqdm
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from data.tokenizer import BPETokenizer       # noqa: E402
+from data.tokenizer import BPETokenizer, EOS_ID  # noqa: E402
 from data.dataset import TextDataset, PackedDataset   # noqa: E402
 from model.gpt import GPT                     # noqa: E402
 
@@ -273,6 +273,52 @@ def main():
         else:
             print(f'⚠️ 未找到 resume 文件: {resume_path}，从头训练')
 
+    # ---------- 启动配置快照（终端打印 + 落盘留档，方便日后对比实验） ----------
+    dataset_tag = os.path.splitext(os.path.basename(args.train_txt))[0]
+    config_lines = [
+        '========== RUN CONFIG ==========',
+        f'resume_from_step:   {global_step0}',
+        f'dataset_tag:        {dataset_tag}',
+        'model:',
+        f'  n_layer:          {args.n_layer}',
+        f'  n_head:           {args.n_head}',
+        f'  n_embd:           {args.n_embd}',
+        f'  block_size:       {args.block_size}',
+        f'  vocab_size:       {vocab_size}',
+        f'  tie_embeddings:   {args.tie_embeddings}',
+        f'  dropout:          {args.dropout}',
+        f'  parameters:       {n_params:,}',
+        'data:',
+        f'  train_tokens:     {len(train_tokens):,}',
+        f'  val_tokens:       {len(val_tokens):,}',
+        f'  sample_mode:      {args.sample_mode}',
+        f'  packing:          {"pack(不重叠)" if args.sample_mode=="pack" else "slide(stride=1)"}',
+        f'  eos_token:        <eos> (id={EOS_ID})  [纯续写训练未用]',
+        'training:',
+        f'  batch_size:       {args.batch_size}',
+        f'  tokens_per_step:  {args.batch_size * args.block_size:,}',
+        f'  lr:               {args.lr}',
+        f'  warmup_steps:     {args.warmup_steps}',
+        f'  decay_steps:      {max(0, total_steps - args.warmup_steps)}',
+        f'  total_steps:      {total_steps}',
+        f'  min_lr:           {args.lr * min_ratio:.2e} (=max_lr*{min_ratio})',
+        f'  optimizer:        AdamW',
+        f'  weight_decay:     {args.weight_decay}',
+        f'  grad_clip:        {args.grad_clip}',
+        f'  val_every:        {args.val_every}',
+        f'  patience:         {args.patience}',
+        '==================================',
+    ]
+    for cl in config_lines:
+        print(cl)
+    import time as _time
+    _cfg_path = os.path.join(resolve(args.log_dir), 'run_config.txt')
+    os.makedirs(os.path.dirname(_cfg_path), exist_ok=True)
+    with open(_cfg_path, 'a', encoding='utf-8') as f:
+        f.write(f'\n[{_time.strftime("%Y-%m-%d %H:%M:%S")}] run start\n')
+        f.write('\n'.join(config_lines) + '\n')
+    print(f'📄 配置已追加到: {_cfg_path}')
+
     # ---------- eval 模式 loss（无 dropout，用来判断过拟合） ----------
     def eval_loss(loader):
         gpt.eval()
@@ -319,10 +365,10 @@ def main():
     stopped = False
 
     # ---------- 验证历史 CSV（每次验证追加一行，resume 续训也接着记） ----------
-    val_csv_path = os.path.join(
-        resolve(args.log_dir),
-        f"val_history_{os.path.splitext(os.path.basename(args.train_txt))[0]}.csv")
-    os.makedirs(os.path.dirname(val_csv_path), exist_ok=True)
+    corpus_tag = os.path.splitext(os.path.basename(args.train_txt))[0]
+    log_dir = resolve(args.log_dir)
+    os.makedirs(log_dir, exist_ok=True)
+    val_csv_path = os.path.join(log_dir, f"val_history_{corpus_tag}.csv")
     csv_header = ('step,where,val,train_eval,gap,lr,is_best,no_improve,'
                   'best_val,wall_time')
     if not os.path.exists(val_csv_path) or os.path.getsize(val_csv_path) == 0:
@@ -330,9 +376,42 @@ def main():
             f.write(csv_header + '\n')
         print(f'📈 验证历史将记录到: {val_csv_path}')
 
-    import time as _time
+    # ---------- step 级历史 CSV（每步一行: tokens_seen 用于跨 run 公平比较） ----------
+    # 列: step,epoch,tokens_seen,train_loss(EMA),val_loss(验证步才有),lr,time
+    # tokens_seen = 全局累计看到的 token 数(含 resume 前的), 与 batch/epoch 无关,
+    #   以后比较 400M vs 1B tokens / 不同 batch 都看这一列。
+    step_csv_path = os.path.join(log_dir, f"step_history_{corpus_tag}.csv")
+    step_header = 'step,epoch,tokens_seen,train_loss,val_loss,lr,time'
+    step_csv_new = (not os.path.exists(step_csv_path)
+                    or os.path.getsize(step_csv_path) == 0)
+    step_fh = open(step_csv_path, 'a', encoding='utf-8')
+    if step_csv_new:
+        step_fh.write(step_header + '\n')
+    _buf: list[str] = []          # 行缓冲, 攒批落盘
+    _last_flush_step = 0
+
+    def flush_step_rows():
+        nonlocal _buf, _last_flush_step
+        if _buf:
+            step_fh.write('\n'.join(_buf) + '\n')
+            _buf = []
+        _last_flush_step = global_step
+
+    def append_step_row(train_loss_ema, val_loss=None):
+        """每步调一次; val_loss 非 None(验证步) 时带上。"""
+        tok = global_step * args.batch_size * args.block_size   # 全局 token 数
+        ep = tok / max(1, len(train_tokens))                    # 进度(按 token 计)
+        val_s = f'{val_loss:.4f}' if val_loss is not None else ''
+        row = (f'{global_step},{ep:.3f},{tok},{train_loss_ema:.4f},{val_s},'
+               f'{scheduler.get_last_lr()[0]:.2e},'
+               f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
+        _buf.append(row)
+        # 每 25 步 flush 一次
+        if global_step - _last_flush_step >= 25:
+            flush_step_rows()
+
     def log_validation_row(where, val_loss, train_ev, gap, lr, is_best):
-        """把一次验证结果追加到 CSV（终端照常打印，这里额外留档）。"""
+        """把一次验证结果追加到 val CSV（细粒度每验证行）。"""
         row = (f'{global_step},{where},{val_loss:.4f},'
                f'{train_ev if train_ev is not None else ""},'
                f'{gap if gap is not None else ""},{lr:.2e},'
@@ -340,6 +419,10 @@ def main():
                f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
         with open(val_csv_path, 'a', encoding='utf-8') as f:
             f.write(row + '\n')
+        # step 历史里也补一行带 val 的（与无 val 的 step 行并存, 画图取非空列即可）
+        append_step_row(ema if ema is not None else float('nan'),
+                        val_loss=val_loss)
+        flush_step_rows()
 
     def run_validation(where):
         """验证一次；返回是否触发早停。"""
@@ -408,6 +491,7 @@ def main():
             global_step += 1
             ema = loss.item() if ema is None else 0.99 * ema + 0.01 * loss.item()
             pbar.set_postfix(loss=f'{ema:.3f}', lr=f'{scheduler.get_last_lr()[0]:.1e}')
+            append_step_row(ema)                       # ★ 每步记一行 (tokens_seen/lr/...)
 
             if args.max_steps and global_step >= args.max_steps:
                 stopped = True
@@ -418,6 +502,7 @@ def main():
                     break
         pbar.close()
 
+        flush_step_rows()                              # epoch 末把缓冲落盘
         tqdm.write(f'epoch {epoch} 平均 train loss: {running / max(steps_here, 1):.3f} '
                    f'(EMA {ema:.3f}) — 已完成 {global_step}/{total_steps} 步')
         # epoch 末总是验证一次（与步级验证同一步时自动去重），保证任何模式下都会保存 checkpoint
@@ -427,7 +512,11 @@ def main():
         if stopped:
             break
 
+    flush_step_rows()
+    step_fh.close()
     tqdm.write(f'训练结束。最佳模型: {best_path} (val {best_val:.3f})')
+    tqdm.write(f'📈 验证历史: {val_csv_path}')
+    tqdm.write(f'📈 step 历史: {step_csv_path}')
 
 
 if __name__ == '__main__':
