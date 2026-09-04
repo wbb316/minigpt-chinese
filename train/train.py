@@ -112,6 +112,9 @@ def main():
     parser.add_argument('--weight-decay', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--warmup-steps', type=int, default=500)
+    parser.add_argument('--min-lr-ratio', type=float, default=0.1,
+                        help='cosine 衰减底部学习率 = max_lr × 该比例（默认 0.1，不再衰减到 0，'
+                             '保留尾部学习能力；设 0.0 恢复衰减到 0）')
     parser.add_argument('--grad-clip', type=float, default=1.0)
     # 验证 / 早停
     parser.add_argument('--val-every', type=int, default=5000,
@@ -232,13 +235,15 @@ def main():
 
     # ---------- warmup + cosine 调度 ----------
     warmup = args.warmup_steps
+    min_ratio = max(0.0, args.min_lr_ratio)          # 底部学习率比例（默认 0.1）
 
     def lr_lambda(step):
         if step < warmup:
             return (step + 1) / warmup                       # 线性升到 1.0
         t = (step - warmup) / max(1, total_steps - warmup)   # 0 → 1
         t = min(t, 1.0)
-        return 0.5 * (1.0 + math.cos(math.pi * t))           # cosine 衰减到接近 0
+        # cosine 从 1.0 衰减到 min_ratio（默认 0.1，不归零 → 尾部保留学习能力）
+        return min_ratio + 0.5 * (1.0 - min_ratio) * (1.0 + math.cos(math.pi * t))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
