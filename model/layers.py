@@ -11,9 +11,10 @@ class LayerNorm(nn.Module):
         self.beta = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x):
+        # 标准 LayerNorm：有偏方差 (除以 N) + sqrt(var + eps)
         mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
+        var = x.var(-1, keepdim=True, unbiased=False)
+        return self.gamma * (x - mean) / torch.sqrt(var + self.eps) + self.beta
 
 
 class PositionalEncoding(nn.Module):

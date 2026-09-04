@@ -23,6 +23,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 from model.gpt import GPT  # noqa: E402
+from model.sampling import sample  # noqa: E402
+from model.generation import generate_ids  # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -52,20 +54,23 @@ def load_model(ckpt_path='result/checkpoint_best.pt',
 
 
 # ---------------------------------------------------------------- 生成
-def _sample(logits, temperature, rng):
+def _sample(logits, temperature, rng, top_p=1.0, repetition_penalty=1.0,
+            prev_ids=None):
     """从 logits 采样一个 token；temperature<=0 时贪心(argmax)。返回 (B,1) 张量。"""
-    if temperature > 0:
-        probs = torch.softmax(logits / temperature, dim=-1)
-        return torch.multinomial(probs, 1, generator=rng)
-    return logits.argmax(dim=-1, keepdim=True)
+    return sample(logits, temperature=temperature, top_p=top_p,
+                  repetition_penalty=repetition_penalty,
+                  prev_ids=prev_ids, rng=rng)
 
 
 def generate(gpt, tokenizer, prompt, max_new_tokens=50, temperature=1.0,
+             top_p=1.0, repetition_penalty=1.0,
              use_cache=False, seed=0):
     """续写。use_cache=True 用 KV cache 加速（预填充后每步只算新 token）。"""
     ids = tokenizer.encode(prompt)
     idx = torch.tensor(ids[-gpt.block_size:], device=device).unsqueeze(0)
     rng = torch.Generator(device=device).manual_seed(seed)
+    ctx = ids[-gpt.block_size:]          # 完整可见上下文（重复惩罚用）
+    all_ids = list(ctx)
 
     if use_cache:
         # 预填充：完整前向一次，拿到所有层的 KV 缓存 + 全部位置的 logits
@@ -74,19 +79,27 @@ def generate(gpt, tokenizer, prompt, max_new_tokens=50, temperature=1.0,
         logits = gpt(idx)
 
     cur = idx
-    new_ids = []
     for _ in range(max_new_tokens):
-        next_token = _sample(logits[:, -1, :], temperature, rng)   # 取最后一个位置采样
-        new_ids.append(next_token.item())
+        next_token = _sample(logits, temperature, rng,
+                             top_p=top_p, repetition_penalty=repetition_penalty,
+                             prev_ids=all_ids)   # 取最后一个位置采样
+        nid = int(next_token.item())
+        all_ids.append(nid)
 
         if use_cache:
-            # 下步：只喂刚生成的 token，复用缓存
-            logits, kvs = gpt(next_token, past_kvs=kvs)
+            # 下步：只喂刚生成的 token，复用缓存；缓存将超窗则重建
+            if kvs[0][0].size(2) + 1 > gpt.block_size:
+                wx = torch.tensor([all_ids[-gpt.block_size:]],
+                                  device=device)
+                logits, kvs = gpt(wx, return_kv=True)
+            else:
+                logits, kvs = gpt(next_token, past_kvs=kvs)
         else:
             cur = torch.cat([cur, next_token], dim=1)
+            cur = cur[:, -gpt.block_size:]          # 超窗截断（与训练一致）
             logits = gpt(cur)
 
-    return tokenizer.decode(idx[0].tolist() + new_ids)
+    return tokenizer.decode(idx[0].tolist() + all_ids[len(ctx):])
 
 
 # ---------------------------------------------------------------- 验证
@@ -150,14 +163,26 @@ def main():
     parser.add_argument('--demo', action='store_true', help='只跑示例生成（KV cache）')
     parser.add_argument('--n-head', type=int, default=8)
     parser.add_argument('--max-new-tokens', type=int, default=100)
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='采样温度（<=0 贪心）')
+    parser.add_argument('--top-p', type=float, default=1.0,
+                        help='nucleus 采样阈值（1.0 = 不截断）')
+    parser.add_argument('--repetition-penalty', type=float, default=1.0,
+                        help='重复惩罚（1.0 = 不惩罚；1.1~1.2 抑制复读）')
+    parser.add_argument('--ckpt', default='result/checkpoint_best.pt', help='模型权重路径')
+    parser.add_argument('--tokenizer', default='result/tokenizer_best.pkl', help='分词器 pkl 路径')
     args = parser.parse_args()
 
-    gpt, tokenizer = load_model(n_head=args.n_head)
+    gpt, tokenizer = load_model(ckpt_path=args.ckpt, tok_path=args.tokenizer,
+                                n_head=args.n_head)
+
+    kw = dict(top_p=args.top_p, repetition_penalty=args.repetition_penalty)
 
     prompts = ["真唯同学", "我喜欢你"]
     if args.demo:
         for p in prompts:
-            out = generate(gpt, tokenizer, p, max_new_tokens=40, use_cache=True)
+            out = generate(gpt, tokenizer, p, max_new_tokens=args.max_new_tokens,
+                           temperature=args.temperature, use_cache=True, **kw)
             print(f'\n【{p}】→\n{out}')
         return
 
@@ -173,7 +198,8 @@ def main():
     # 3) 示例生成
     print('\n---- 示例生成 (KV cache) ----')
     for p in prompts:
-        out = generate(gpt, tokenizer, p, max_new_tokens=40, use_cache=True)
+        out = generate(gpt, tokenizer, p, max_new_tokens=args.max_new_tokens,
+                       temperature=args.temperature, use_cache=True, **kw)
         print(f'\n【{p}】→\n{out}')
 
 

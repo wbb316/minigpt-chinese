@@ -24,16 +24,23 @@ class Block(nn.Module):
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, n_layer: int, n_head: int,
-                   n_embd: int, block_size: int, dropout: float = 0.0):
+                   n_embd: int, block_size: int, dropout: float = 0.0,
+                   tie_embeddings: bool = False):
         super().__init__()
         self.block_size = block_size
         self.vocab_size = vocab_size
+        self.tie_embeddings = tie_embeddings
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
         self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
         self.blocks=nn.ModuleList([Block(n_embd,n_head,dropout=dropout) for _ in range(n_layer)])   # ★ 传 dropout
         self.ln=LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
         self.head=nn.Linear(n_embd,vocab_size)
+        if tie_embeddings:
+            # 输入/输出嵌入共享权重（省掉 head 的 833K 参数）。
+            # 保留 head.bias 不改动，checkpoint 结构（token_emb.weight/head.weight/head.bias）
+            # 与不 tie 时一致，generate/visualize 等加载代码无需任何改动。
+            self.head.weight = self.token_emb.weight
 
     def forward(self, x :torch.Tensor, past_kvs=None, return_kv=False):
         """GPT 前向（支持 KV cache 增量推理）。
@@ -70,4 +77,5 @@ class GPT(nn.Module):
         return x
 
     def get_num_params(self):
-        return sum(p.numel() for p in self.parameters())
+        # 共享参数（tie_embeddings）只计一次
+        return sum(p.numel() for p in {id(p): p for p in self.parameters()}.values())

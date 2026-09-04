@@ -1,16 +1,41 @@
+# ---- Python 常规 ----
 __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
+.idea/
+.mypy_cache/
+
+# ---- 模型权重 / 分词器（大文件不进 git）----
 *.pt
 *.pth
+*.pkl
 checkpoints/
-data/raw/
-.pytest_cache/
+result/
+result_*/
+!result/*.png          # 曲线/热力图等小图例外
+!result/*.csv
 
-# 大数据文件不进 git（语料/缓存）
+# ---- 语料与缓存（GB 级，不进 git）----
+data/raw/
 data/corpus.txt
 data/train.txt
 data/val.txt
+data/train_lightnovel*.txt
+data/val_lightnovel*.txt
+data/*.npy
 data/tokens_*.npy
 data/*_v*.npy
+data1/
+scratch/*.gz
+scratch/*-ubyte
+
+# ---- 安全：SSH 私钥/密钥绝不入库 ----
+.autodl_key/
+*.key
+*.pem
+
+# ---- 杂项 ----
+*.log
+.probe.bin

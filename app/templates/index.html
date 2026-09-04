@@ -43,10 +43,11 @@
         }
         textarea:focus { outline: none; border-color: #ec4899; background: #fff; }
 
-        .controls { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
-        .temp-label { font-size: 13px; color: #6b7280; white-space: nowrap; }
+        .controls { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
+        .temp-label { font-size: 13px; color: #6b7280; white-space: nowrap; width: 64px; }
         input[type="range"] { flex: 1; accent-color: #ec4899; }
-        .temp-value { font-size: 13px; color: #ec4899; font-weight: bold; width: 32px; text-align: center; }
+        .temp-value { font-size: 13px; color: #ec4899; font-weight: bold; width: 42px; text-align: center; }
+        .hint { font-size: 12px; color: #9ca3af; margin: 2px 0 4px; text-align: center; }
 
         button {
             width: 100%;
@@ -103,10 +104,24 @@
 
         <textarea id="prompt" placeholder="输入开头，例如：我真的..."></textarea>
 
+        <div class="hint">解码参数：温度越低越保守 · top_p 只保留高概率词 · 重复惩罚抑制复读</div>
+
         <div class="controls">
             <span class="temp-label">温度</span>
-            <input type="range" id="temp" min="0.5" max="1.5" step="0.1" value="1.0" oninput="updateTemp()">
-            <span class="temp-value" id="tempVal">1.0</span>
+            <input type="range" id="temp" min="0.3" max="1.5" step="0.05" value="0.8" oninput="updateTemp()">
+            <span class="temp-value" id="tempVal">0.8</span>
+        </div>
+
+        <div class="controls">
+            <span class="temp-label">top_p</span>
+            <input type="range" id="topp" min="0.5" max="1.0" step="0.05" value="0.9" oninput="updateTemp()">
+            <span class="temp-value" id="toppVal">0.9</span>
+        </div>
+
+        <div class="controls">
+            <span class="temp-label">重复惩罚</span>
+            <input type="range" id="rep" min="1.0" max="1.5" step="0.05" value="1.15" oninput="updateTemp()">
+            <span class="temp-value" id="repVal">1.15</span>
         </div>
 
         <button id="genBtn" onclick="generate()">✨ 开始续写</button>
@@ -125,6 +140,8 @@
     <script>
         function updateTemp() {
             document.getElementById('tempVal').textContent = document.getElementById('temp').value;
+            document.getElementById('toppVal').textContent = document.getElementById('topp').value;
+            document.getElementById('repVal').textContent = document.getElementById('rep').value;
         }
 
         async function generate() {
@@ -133,6 +150,8 @@
             if (!prompt) { alert('请先输入开头文字'); return; }
 
             const temp = parseFloat(document.getElementById('temp').value);
+            const top_p = parseFloat(document.getElementById('topp').value);
+            const rep = parseFloat(document.getElementById('rep').value);
             const result = document.getElementById('result');
             const meta = document.getElementById('meta');
             const btn = document.getElementById('genBtn');
@@ -151,13 +170,19 @@
                 const response = await fetch('/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt, max_tokens: 80, temperature: temp })
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        max_tokens: 100,
+                        temperature: temp,
+                        top_p: top_p,
+                        repetition_penalty: rep
+                    })
                 });
                 const data = await response.json();
                 result.className = 'result-box';
                 result.textContent = data.text;
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                meta.textContent = `耗时 ${elapsed}s · ${data.text.length} 字`;
+                meta.textContent = `耗时 ${elapsed}s · ${data.text.length} 字 · t${temp} p${top_p} r${rep}`;
                 actions.style.display = 'flex';
             } catch (e) {
                 result.className = 'result-box error';

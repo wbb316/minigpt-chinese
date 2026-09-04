@@ -1,3 +1,13 @@
-torch>=2.0
-pytest>=7.0
+# 核心训练/推理
+torch>=2.1
 numpy>=1.24
+
+# 测试
+pytest>=7.0
+
+# Web demo（app/server.py）
+fastapi>=0.100
+uvicorn>=0.23
+
+# 可视化（plot_loss.py / visualize_attention.py）
+matplotlib>=3.7

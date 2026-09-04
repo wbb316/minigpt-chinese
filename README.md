@@ -2,85 +2,146 @@
 
 从零用 PyTorch 实现的迷你中文 GPT 文本生成模型 —— 一个从"语料 → 自研分词器 → 模型 → 训练 → 生成"完整链路的中文语言模型项目。
 
-## 🎯 项目简介
+> 核心思想：**不依赖任何现成 NLP 库**（不用 HuggingFace / tiktoken / 预训练模型），
+> BPE 分词器、Transformer、训练循环全部手写，在云端 4090 上从零训出自己的中文小说续写模型。
 
-本项目从零实现了一个基于 Transformer 的字符级中文 GPT 模型，包括：
-- **自研 BPE 分词器**（非使用现成库）：实现字节对编码（Byte Pair Encoding）的合并、编码、解码
-- **从零实现 GPT 模型**：LayerNorm、位置编码、前馈网络、多头因果自注意力、主模型拼装
-- **完整训练链路**：语料清洗 → BPE 分词 → 数据切片 → 训练 → 生成
+## 🎯 项目亮点
 
-**训练成果**：模型在 2900 万字符中文语料（35 本日式百合轻小说）上训练，能生成符合语料风格的通顺中文小说续写。
+- **自研 BPE 分词器**：字节级 BPE，正则预分词 + 链表增量合并，4M 字符训练分钟级、487M 字符并行编码几分钟
+- **从零实现 GPT**：LayerNorm / 正弦位置编码 / FeedForward / 多头因果注意力（SDPA + 手写双路径）/ 主模型拼装
+- **完整训练链路**：语料清洗 → BPE → 数据切片 → 训练（warmup+cosine、AMP、梯度裁剪、step 级验证、早停）→ Web 生成
+- **多代演进记录**：7.2M 百合单语料 → 6.3M LayerNorm 修复版 → **20M 双语料（v0+v1）最终版**
 
-## 📊 训练配置（最终版）
+## 📊 最终模型（result_20m_all / result_ln）
 
-**配置**：7.2M 参数（n_layer=7, n_head=8, n_embd=256），词表 3256（自研 BPE），block_size 128，dropout 0.2，weight_decay 0.01，早停（patience=2）
+| 版本 | 参数量 | 结构 | 语料 | 词表 | 验证 loss |
+|---|---|---|---|---|---|
+| 百合基线 | 7.2M | 7层/8头/256维 | 35 本百合轻小说 (2900万字) | 3256 | 3.79 |
+| LN 修复版 | 6.3M | 6层/8头/256维 | 轻小说 v0 | 6144 | 4.188 |
+| **20M 最终版** | **20M** | **10层/8头/384维** | **轻小说 v0+v1 (4.16亿 token)** | **6144 + 权重共享** | **3.636** |
 
-**数据**：35 本日式轻小说（约 2900 万字符），按文件 90/10 划分训练/验证集
+> loss 单位 nats，词表大小不同**不可直接横向比**（ln(6144)≈8.72 只是随机基线）。
+> 20M 版 train_eval 3.616 / gap 0.020 —— 未过拟合，还有继续堆数据的空间。
 
-**训练技巧**：
-- 混合精度（AMP）加速
-- 编码缓存（O(N) BPE encode，4小时→6秒）
-- 早停（val 不改善 2 轮自动停）
-- tqdm 进度条 + val loss 实时显示
+**训练配置（20M 版）**：`--n-layer 10 --n-embd 384 --vocab-size 6144 --tie-embeddings --block-size 256 --batch-size 256 --lr 8e-4 --warmup-steps 500 --weight-decay 0.05 --sample-mode pack`
 
-## 🔍 关键发现：验证集划分方式
+## 🧠 关键优化点（踩坑记录）
 
-**问题**：按 token 顺序切分验证集，会高估 loss（验证集可能只包含某本没被训练见过的小说）。
+### 1. 验证集划分方式（最先修复的 bug）
+按 token 顺序切分验证集会**高估 loss**（验证集可能包含某本训练没见过的整本书）。
+改成**按文件划分**（每本前 90% 训练、后 10% 验证），val loss 从 4.5 → 3.79。
 
-**解法**：改成**按文件划分**——每本书前 90% 训练、后 10% 验证。**val loss 从 4.5 降到 3.79**，更真实地反映泛化能力。
+### 2. LayerNorm 标准化
+早期用了无偏方差 + 不带 eps 除法的错误实现，收敛慢、数值不稳。改为标准实现
+`(x - mean) / sqrt(var_biased + eps) * gamma + beta`，同规模下验证 loss 明显改善。
 
-## ✨ 生成效果（温度采样对比）
+### 3. BPE 分词器 v2（正则预分词 + 链表增量合并）
+- 预分词 `\w+|[^\w\s]|\s+`：合并**永不跨标点/空白**，中文语义更干净
+- 训练用**链表 + numpy 增量**统计相邻对，4M 字符从 ~50 分钟降到分钟级
+- 并行 encode（16 进程）：487M 字符从 30-60 分钟 → 几分钟
+- 采样 bug 修复：训练样本从语料**均匀撒 100 段 × 20K 字符**（之前误改成了只取开头 2M）
 
-同一个模型，**温度决定生成质量**：
+### 4. 数据模式：slide vs pack
+- `slide`（stride=1）：重叠滑窗，样本多、训练稳，适合小语料
+- `pack`（stride=block_size）：不重叠打包，100M+ 语料每 epoch 从小时级 → 分钟级
+- 数据全程 numpy int64 零拷贝视图，内存 720MB → 160MB
 
-| 温度 | 效果 |
-|------|------|
-| **0.5** | 「紫阳花同学，她对我的感情是很重要的。不过，紫阳花同学一定是想要我拒绝真唯的。我──想要到她身边。」——**连贯、有情感** |
-| 1.0 | 对话自然，有小逻辑 |
-| 1.5 | 乱码、语无伦次（温度过高） |
+### 5. 过拟合判断修正（gap 指标）
+训练 loss 带 dropout 噪声 + epoch 平均偏高，不能直接与 val 比。
+验证时**额外算 eval 模式（无 dropout）的 train loss**，打印 `gap = val - train_eval` —— 这才是正确指标。
 
-**结论**：小模型 + 单语料适合**低温（0.5）**生成，效果远超默认温度 1.0。
+### 6. tie_embeddings + 权重去重
+输入/输出嵌入共享权重（省掉 head 的 ~833K 参数），`dedupe_params` 避免被优化两次。
+
+### 7. KV cache 增量推理（生成加速）
+- `attention.py` 缓存路径：每步只算新 token 的 q/k/v，与历史拼接
+- 与原版整序列重算**逐位置 logits 完全一致**（max diff < 1e-4），~1.6-2.2x
+- `model/generation.py` 加**超窗重建**：缓存超过 block_size 时用最近 block_size 个 token 重建，长生成不越界
+
+### 8. SDPA（Flash Attention）训练加速
+`attention.py` 训练路径用 `F.scaled_dot_product_attention(is_causal=True)`：
+不物化 (B,H,T,T) 注意力矩阵，block 256+ 显存省 ~50%、速度更快（Flash / mem-efficient 自动选择）。
+KV cache / 自定义 mask 路径保留手写实现（Flash 不支持）。
+
+### 9. 生成采样三参数（观感质量飞跃）
+`model/sampling.py` 统一实现，网页三个滑块可调：
+
+| 参数 | 作用 | 推荐默认 |
+|---|---|---|
+| temperature | 温度，越低越保守 | 0.8 |
+| top_p | Nucleus，只保留累积概率前 top_p 的 token | 0.9 |
+| repetition_penalty | 抑制复读（logit>0 除以 penalty） | 1.15 |
+
+同模型同 seed 对比：纯采样（t=1.0）会跳变复读（"傀儡师""轻易吐露的兴趣"），
+三参数默认值下输出通顺、有对话体（实测 20M 版效果）。
+
+### 10. 断点续训 + warm restart
+`--resume <latest>` 恢复 optimizer/AMP/step，cosine 按全局 step 重新锚定（相当于 warm restart，LR 回升，可多跑几轮）。
 
 ## 🏗️ 项目结构
 
 ```
 minigpt-chinese/
-├── model/          # GPT 模型（从零实现）
-│   ├── layers.py       # LayerNorm、位置编码、前馈网络
-│   ├── attention.py    # 多头因果自注意力
-│   └── gpt.py          # GPT 主模型
-├── data/           # 数据模块
-│   ├── tokenizer.py    # 自研 BPE 分词器
-│   ├── dataset.py      # 数据集封装（滑动窗口切片）
-│   └── prepare_corpus.py  # 语料清洗（GBK→UTF-8，去广告/版权）
-├── train.py        # 训练脚本
-├── generate.py     # 生成测试脚本
-├── plot_loss.py    # 训练曲线可视化
-├── tests/          # 测试（11个全过）
-└── result/         # 训练成果（模型、分词器、曲线图）
+├── model/
+│   ├── layers.py       # LayerNorm、正弦位置编码、FeedForward
+│   ├── attention.py    # 多头因果注意力（SDPA 训练路径 + KV cache 手写路径）
+│   ├── gpt.py          # GPT 主模型（tie_embeddings、KV cache、去重参数计数）
+│   ├── sampling.py     # 采样工具：temperature / top_p / repetition_penalty
+│   └── generation.py   # 共享自回归引擎（KV cache + 超窗重建）
+├── data/
+│   ├── tokenizer.py    # 自研 BPE（v2：预分词 + 链表增量合并）
+│   ├── dataset.py      # TextDataset（slide）/ PackedDataset（pack）
+│   ├── prepare_corpus.py        # 百合语料清洗
+│   └── prepare_lightnovel.py    # 网文语料切片（v0/v1/all）
+├── train/
+│   ├── train.py            # 主训练脚本
+│   └── train_small_*.py    # 数据量/模型量对比实验
+├── app/
+│   ├── server.py           # FastAPI 后端（自动推断架构）
+│   └── templates/index.html# 前端（温度/top_p/重复惩罚滑块）
+├── test/                   # pytest（26 个用例）
+├── generate.py             # 生成 + KV cache 一致性验证 + 计时
+├── visualize_attention.py  # 注意力热力图（hook 版，不改模型）
+├── plot_loss.py            # 训练曲线
+└── scratch/                # 早期 PyTorch 学习脚本（CIFAR/MNIST 教程）
 ```
 
-## 🔬 技术要点
+## 🚀 快速开始
 
-- **BPE 分词器**：字节级，反复合并"出现最多的相邻对"直到词表达标；`train/encode/decode` 三方法
-- **GPT 模型**：token嵌入 → 位置编码 → N×Block(注意力+前馈+残差) → LayerNorm → 输出层
-- **因果注意力**：下三角 mask 确保 token 只能看前面
-- **训练**：AdamW、cross_entropy、batch 256、GPU 加速（AutoDL 4090）
+```bash
+pip install -r requirements.txt
+
+# 测试（26 个用例）
+python -m pytest test/ -v
+
+# 生成测试（KV cache 一致性验证 + 计时 + 示例）
+python generate.py --ckpt result_20m_all/checkpoint_best.pt \
+                   --tokenizer result_20m_all/tokenizer_best.pkl
+
+# Web demo
+python app/server.py --ckpt result_20m_all/checkpoint_best.pt \
+                     --tokenizer result_20m_all/tokenizer_best.pkl
+# 浏览器打开 http://127.0.0.1:8000
+```
 
 ## 🧪 测试
 
-11 个测试全部通过（LayerNorm、注意力、GPT 结构、过拟合冒烟、BPE、数据集）：
+26 个测试全部通过：LayerNorm、注意力（含 SDPA/缓存）、GPT 结构、过拟合冒烟、BPE（v1+v2）、数据集、采样器（11 个）。
 
-```bash
-python -m pytest tests/ -v
-```
+## 📅 Roadmap
 
-## 📅 项目状态
-
-- [x] 阶段1：PyTorch 复习
+- [x] 阶段1：PyTorch 复习（CIFAR/MNIST）
 - [x] 阶段2：从零写 GPT 模型
 - [x] 阶段3：数据管线 + 自研 BPE tokenizer
 - [x] 阶段4：训练 + 可视化（loss 曲线）
-- [x] 阶段5：实验体系（三组对比实验 + 分析）
-- [x] 阶段6：后端 API + 前端页面（本地跑通）
-- [ ] 阶段7：部署上线（待做）
+- [x] 阶段5：实验体系（对比实验 + 分析）
+- [x] 阶段6：后端 API + 前端页面
+- [x] 阶段7：优化迭代（LN 修复、pack 模式、SDPA、KV cache、采样参数、20M 训练）
+- [ ] 阶段8：更大模型 + 更长上下文（30M+ / block 512）
+- [ ] 阶段9：部署上线
+
+## 📜 数据说明
+
+- `D:\小说` 原始网文语料（v0 ~493MB / v1 ~1GB），经 `data/prepare_lightnovel.py` 清洗切分为 v0/v1/all
+- 百合语料 35 本（旧版），目录 `data/train.txt / val.txt`
+- 语料文件与 npy 缓存为 GB 级，均被 .gitignore 排除，不入仓库

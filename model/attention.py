@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class MultiHeadAttention(nn.Module):
@@ -22,6 +23,10 @@ class MultiHeadAttention(nn.Module):
           token 的 q/k/v，与缓存拼接后算注意力（生成时不再重算历史）。
         - return_kv: 是否返回 (输出, 新kv)。past_kv 给定时也会返回 kv。
 
+        训练/常规路径（无缓存、无自定义 mask）用 SDPA(flash/mem-efficient)：
+        不物化 (B,H,T,T) 注意力矩阵 —— block 256+ 时显存省 ~50%，速度也更快。
+        推理缓存路径与自定义 mask 路径保留手写实现。
+
         返回:
           - 默认: 输出 (B, T, C)
           - past_kv 或 return_kv 给定时: (输出, (k, v))，k/v 形状 (B, H, T_full, head_dim)
@@ -29,6 +34,20 @@ class MultiHeadAttention(nn.Module):
         B, T, C = x.shape
         q = self.q(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
+        if past_kv is None and mask is None:
+            # ---------- SDPA 路径（训练/常规, 全因果） ----------
+            k = self.k(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            v = self.v(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            y = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=True)                     # 自动选 flash / mem-efficient
+            out = self.out_proj(y.transpose(1, 2).contiguous().view(B, T, C))
+            if return_kv:
+                return out, (k, v)
+            return out
+
+        # ---------- 手写路径（KV cache 增量 或 自定义 mask） ----------
         if past_kv is not None:
             k_prev, v_prev = past_kv
             k_new = self.k(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
