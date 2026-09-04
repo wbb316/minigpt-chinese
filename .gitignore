@@ -39,3 +39,6 @@ scratch/*-ubyte
 # ---- 杂项 ----
 *.log
 .probe.bin
+.web_readme.md
+log/
+scratch/data/
