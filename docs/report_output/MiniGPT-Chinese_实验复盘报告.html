@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniGPT-Chinese 实验复盘报告</title>
+<style>
+  :root{
+    --ink:#20242c; --sub:#5c6573; --faint:#8a93a3; --line:#e4e8ef; --bg:#f5f7fa; --card:#fff;
+    --blue:#3d7bd6; --green:#2f9e74; --red:#d2604f; --orange:#dd923c; --purple:#7a6fd0;
+    --blue-bg:#eef4fd; --green-bg:#ecf7f2; --red-bg:#fdeeed; --orange-bg:#fdf4e7; --grey-bg:#f0f3f8;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    line-height:1.72;font-size:15px;}
+  .wrap{max-width:980px;margin:0 auto;padding:34px 22px 70px;}
+  /* 封面 */
+  .cover{background:linear-gradient(135deg,#23304a,#2f4a6e);color:#fff;border-radius:16px;
+    padding:34px 34px 28px;margin-bottom:26px;}
+  .cover .tag{font-size:12.5px;letter-spacing:2px;color:#bcd0ee;text-transform:uppercase;}
+  .cover h1{font-size:28px;margin:8px 0 6px;letter-spacing:.5px;}
+  .cover .meta{font-size:13px;color:#c7d6ee;margin-top:10px;}
+  .cover .meta span{display:inline-block;margin-right:18px;}
+  /* 章节 */
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:24px 26px;margin-bottom:20px;box-shadow:0 1px 3px rgba(30,40,60,.04);}
+  h2{font-size:19.5px;margin:0 0 14px;padding-left:12px;border-left:4px solid var(--blue);line-height:1.3;}
+  h3{font-size:16px;margin:20px 0 8px;color:#23304a;}
+  h4{font-size:14.5px;margin:14px 0 6px;color:#33415c;}
+  p{margin:8px 0;}
+  ul,ol{margin:8px 0;padding-left:22px;}
+  li{margin:4px 0;}
+  code{background:#eef1f6;padding:1px 6px;border-radius:5px;font-size:13px;
+    font-family:Consolas,"Courier New",monospace;color:#33415c;}
+  .mono{font-family:Consolas,"Courier New",monospace;}
+  /* 摘要卡片 */
+  .tldr{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0 4px;}
+  .kpi{border-radius:10px;padding:13px 15px;border:1px solid var(--line);}
+  .kpi .n{font-size:22px;font-weight:700;}
+  .kpi .l{font-size:12px;color:var(--sub);margin-top:2px;}
+  .kpi.blue{background:var(--blue-bg);}.kpi.blue .n{color:var(--blue);}
+  .kpi.green{background:var(--green-bg);}.kpi.green .n{color:var(--green);}
+  .kpi.orange{background:var(--orange-bg);}.kpi.orange .n{color:var(--orange);}
+  .callout{border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px;border:1px solid;}
+  .c-key{background:var(--blue-bg);border-color:#cfe0f8;}
+  .c-warn{background:var(--orange-bg);border-color:#f0d9b8;}
+  .c-good{background:var(--green-bg);border-color:#c4e6d8;}
+  .c-risk{background:var(--red-bg);border-color:#f3cdc6;}
+  .callout b.t{display:block;margin-bottom:3px;}
+  /* 表格 */
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.2px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:center;vertical-align:middle;}
+  th{background:#eef2f8;color:#2b3650;font-weight:600;}
+  td.l,th.l{text-align:left;}
+  tr:nth-child(even) td{background:#fafbfd;}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11.5px;font-weight:600;}
+  .p-red{background:var(--red-bg);color:var(--red);}
+  .p-green{background:var(--green-bg);color:var(--green);}
+  .p-blue{background:var(--blue-bg);color:var(--blue);}
+  .p-orange{background:var(--orange-bg);color:var(--orange);}
+  .p-grey{background:var(--grey-bg);color:var(--sub);}
+  /* 时间线 */
+  .timeline{display:flex;gap:0;margin:18px 0 6px;flex-wrap:wrap;}
+  .tl-node{flex:1;min-width:150px;position:relative;padding:0 8px;}
+  .tl-node::before{content:'';position:absolute;top:13px;left:calc(-50% + 22px);width:100%;height:3px;background:#cfd8e6;z-index:0;}
+  .tl-node:first-child::before{display:none;}
+  .tl-dot{width:26px;height:26px;border-radius:50%;color:#fff;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;position:relative;z-index:1;margin-bottom:8px;}
+  .tl-body{font-size:12.3px;color:var(--sub);}
+  .tl-body b{color:var(--ink);font-size:13px;display:block;}
+  /* SVG 三态 */
+  .tri{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:14px 0;}
+  .tri .pane{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fcfdff;}
+  .tri .pane h4{margin:0 0 4px;text-align:center;}
+  .tri .pane p{font-size:12px;color:var(--sub);margin:6px 0 0;}
+  .legend{font-size:12px;color:var(--sub);margin-top:4px;}
+  .legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin:0 4px 0 10px;border-radius:2px;}
+  .formula{background:#2b3344;color:#e8edf6;border-radius:10px;padding:13px 18px;font-family:Consolas,monospace;
+    font-size:13.5px;margin:12px 0;overflow-x:auto;}
+  .small{font-size:12.5px;color:var(--sub);}
+  .toc{columns:2;font-size:13.5px;}
+  .toc a{color:#2f4a6e;text-decoration:none;} .toc a:hover{text-decoration:underline;}
+  .cmd{background:#222b3a;color:#d7e3f5;border-radius:9px;padding:12px 15px;font-family:Consolas,monospace;
+    font-size:12.6px;line-height:1.6;overflow-x:auto;margin:10px 0;white-space:pre;}
+  .cmd .cm{color:#7f93b5;}
+  hr.soft{border:none;border-top:1px dashed var(--line);margin:18px 0;}
+  @media(max-width:760px){
+    .tldr,.tri{grid-template-columns:1fr;}
+    .cover h1{font-size:22px;}
+    section{padding:18px 16px;}
+    .toc{columns:1;}
+    table{font-size:12px;}
+  }
+  @media print{ body{background:#fff;} section{box-shadow:none;break-inside:avoid;} .cover{print-color-adjust:exact;-webkit-print-color-adjust:exact;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 封面 -->
+  <div class="cover">
+    <div class="tag">Experiment Retrospective · Training Dynamics Review</div>
+    <h1>MiniGPT-Chinese 项目实验复盘报告</h1>
+    <div style="font-size:14px;color:#dbe6f6;max-width:760px;">从零手写 BPE 分词器与 Transformer 的中文小说续写模型：三轮实验的演进动因、loss 变化机制、过拟合判据、下一阶段受控实验设计与 Scaling 建议。</div>
+    <div class="meta">
+      <span>最终模型：10L / 8H / d384 · 实测 20,110,848 参数</span>
+      <span>最佳 val_loss：3.636 nats（PPL≈37.9）</span>
+      <span>数据：4.16 亿 token</span>
+    </div>
+  </div>
+
+  <!-- 目录 -->
+  <section>
+    <h2>目录与阅读指引</h2>
+    <div class="toc">
+      <a href="#s1">1. 结论摘要（TL;DR）</a><br>
+      <a href="#s2">2. 项目与最终模型快照（代码证据）</a><br>
+      <a href="#s3">3. 三轮实验全景与可比性</a><br>
+      <a href="#s4">4. 逐轮深度复盘：为什么变、loss 为什么这样走</a><br>
+      <a href="#s5">5. 过拟合 / 欠拟合 / 伪收敛判据体系</a><br>
+      <a href="#s6">6. 当前瓶颈：容量 / 上下文 / 数据 三轴</a><br>
+      <a href="#s7">7. 下一阶段受控实验设计</a><br>
+      <a href="#s8">8. Scaling 建议与配置表</a><br>
+      <a href="#s9">9. 附录：公式推导、证据与口径</a>
+    </div>
+    <p class="small" style="margin-top:12px;">说明：当前仓库代码只代表<b>最终版本</b>，早期 slide、未做权重共享、cosine 归零等历史状态已不在代码中；本报告结合你提供的 Experiment History 还原完整实验过程，凡属推断处均显式标注。配套《MiniGPT_实验数据看板.html》给出全部数据图表。</p>
+  </section>
+
+  <!-- 1 摘要 -->
+  <section id="s1">
+    <h2>1. 结论摘要（TL;DR）</h2>
+    <div class="tldr">
+      <div class="kpi blue"><div class="n">3.792 → 钉死</div><div class="l">实验1：真过拟合（数据少 + slide 重复曝光）</div></div>
+      <div class="kpi orange"><div class="n">4.277 ≠ 退步</div><div class="l">实验2：换了 token 空间，数值不可比，过拟合已消失</div></div>
+      <div class="kpi green"><div class="n">3.636 · gap 0.02</div><div class="l">实验3：调度修复后到位，当前无过拟合</div></div>
+    </div>
+    <div class="callout c-key"><b class="t">三条主线判断</b>
+      ① 实验1 的 val 三连钉死是<b>真过拟合</b>：20M token 太少，叠加 slide <code>stride=1</code> 让每个 token 在一个 epoch 内被高度相关地重复看 128 次，模型记住训练片段、迁移不到未见的书。<br>
+      ② 实验2 的 4.277 <b>不是模型变差</b>：词表 3256→6144、语料、采样模式、上下文同时更换，交叉熵换了目标分布，数值尺度不可横比；它真正的结论是 gap≈0.02，<b>过拟合被数据与 pack 消除</b>，矛盾转为容量/训练不足。<br>
+      ③ 实验3 第一阶段的 4.021 <b>不是容量极限</b>，是 cosine 在 E1 末衰减到 0 造成的<b>伪收敛</b>；resume 做 warm restart 后一路降到 3.636，最终 gap≈0.02。
+    </div>
+    <div class="callout c-good"><b class="t">当前所处位置</b>
+      20.11M 参数 / 400M token = <b>19.9 token/param</b>，恰好压在 Chinchilla 20:1 的计算最优线上；E5–E6 连续持平说明在「容量 20M / 上下文 256 / 数据 400M」三轴同时锁定时到达<b>收益递减点</b>。要继续降 loss，必须松开轴，且<b>容量与数据要按比例一起松</b>，单独加一个会走向过拟合或浪费。
+    </div>
+    <p><b>推荐路线：</b>先用三个<b>单变量</b>实验（A 容量 / B 上下文 / C 数据）定位第一瓶颈，再做组合实验 Exp5，落点 <b>35–41M + block512 + 0.7–1B token</b>；上下文翻倍时 batch 减半以保持 <code>tokens/update=65536</code>；固定复用 6144 分词器保证跨实验可比；用已修复的 <code>min_lr_ratio=0.1</code> 杜绝伪收敛。</p>
+  </section>
+
+  <!-- 2 快照 -->
+  <section id="s2">
+    <h2>2. 项目与最终模型快照（代码扫描证据）</h2>
+    <p>结论基于对 <code>model/</code>、<code>data/</code>、<code>train/train.py</code> 源码的通读，以及对最终权重 <code>result_20m_all/checkpoint_best.pt</code> 的<b>实际加载核验</b>（非仅凭 README）。</p>
+    <h3>2.1 最终模型结构（实测）</h3>
+    <table>
+      <tr><th class="l">项目</th><th>实测 / 代码取值</th><th class="l">证据来源</th></tr>
+      <tr><td class="l">层数 / 头数 / 宽度</td><td>10 层 / 8 头 / d=384（head_dim=48）</td><td class="l">checkpoint 含 10 组 blocks；gpt.py</td></tr>
+      <tr><td class="l">前馈 / 激活 / 归一化</td><td>FFN=4d=1536，ReLU，pre-LN（标准有偏方差+eps）</td><td class="l">layers.py / gpt.py</td></tr>
+      <tr><td class="l">位置编码</td><td>正弦绝对位置编码（非 RoPE），buffer max_len=block_size</td><td class="l">layers.py PositionalEncoding</td></tr>
+      <tr><td class="l">嵌入</td><td>输入/输出权重共享 tie_embeddings（实测 <code>torch.equal=True</code>）</td><td class="l">gpt.py + checkpoint</td></tr>
+      <tr><td class="l">可训练参数</td><td><b>20,110,848（≈20.1M，tie 去重）</b></td><td class="l">checkpoint 实测，与公式复算一致</td></tr>
+      <tr><td class="l">注意力实现</td><td>训练走 SDPA（is_causal，省显存）；推理手写 + KV cache</td><td class="l">attention.py</td></tr>
+      <tr><td class="l">dropout</td><td>0.1（embedding / 注意力 / FFN 三处）</td><td class="l">gpt.py、attention.py、layers.py</td></tr>
+    </table>
+    <h3>2.2 训练管线关键机制（train/train.py）</h3>
+    <ul>
+      <li><b>优化</b>：AdamW，lr=8e-4，weight_decay=0.05；warmup 500 步 + cosine（当前版本 <code>min_lr_ratio=0.1</code>，底部不归零）；AMP 混合精度；<code>grad_clip=1.0</code>。</li>
+      <li><b>过拟合口径</b>：每次验证额外在训练集随机子集上以 eval 模式（关 dropout）算 <code>train_eval</code>，报告 <code>gap = val − train_eval</code> —— 这是正确指标，训练时的 EMA/epoch 均值带 dropout 噪声，不能直接与 val 相减。</li>
+      <li><b>数据</b>：按「真书」90/10 划分（修复了顺序切分把整本书落入验证集、高估 loss 的早期 bug）；pack 模式零拷贝视图；缓存名含词表/采样量/语料长度，任一变化自动失效。</li>
+      <li><b>续训</b>：<code>checkpoint_best</code> 为纯推理权重，<code>checkpoint_latest</code> 为含优化器/AMP/step 的完整续训包；resume 时 cosine 按新总步数重锚（warm restart）。</li>
+    </ul>
+    <div class="callout c-warn"><b class="t">「当前代码 ≠ 完整历史」的三处具体体现</b>
+      1）当前默认 <code>sample-mode</code> 已偏向 pack，实验1 的 slide 路线只作为选项保留；2）当前 tie_embeddings 默认开启，而参数量反推显示实验1 当时<b>未做权重共享</b>（见 9.1）；3）当前 cosine 默认保留 10% 底学习率，实验3 第一阶段「衰减到 0」的状态已被修复。历史结论必须结合实验记录解读，不能只看现版本代码。</div>
+  </section>
+
+  <!-- 3 全景 -->
+  <section id="s3">
+    <h2>3. 三轮实验全景与可比性</h2>
+    <table>
+      <tr><th class="l">维度</th><th>实验1 早期 baseline</th><th>实验2 pack 数据版</th><th>实验3 20M scaling（当前）</th></tr>
+      <tr><td class="l">参数量</td><td>≈6.3M（未 tie，见9.1）</td><td>6.3M</td><td><b>20.1M</b></td></tr>
+      <tr><td class="l">vocab_size</td><td>3256</td><td>6144</td><td>6144</td></tr>
+      <tr><td class="l">block_size</td><td>128</td><td>256</td><td>256</td></tr>
+      <tr><td class="l">batch_size</td><td>512</td><td>256</td><td>256</td></tr>
+      <tr><td class="l">训练数据</td><td>≈20M token</td><td>120M token</td><td>400M token</td></tr>
+      <tr><td class="l">采样模式</td><td>slide，stride=1</td><td>pack</td><td>pack</td></tr>
+      <tr><td class="l">最佳 val_loss</td><td>3.792</td><td>4.277</td><td><b>3.636</b></td></tr>
+      <tr><td class="l">train–val gap</td><td><span class="pill p-red">走阔 0.24→0.51</span></td><td><span class="pill p-green">≈0.004–0.019</span></td><td><span class="pill p-green">≈0.020</span></td></tr>
+      <tr><td class="l">定性结论</td><td><span class="pill p-red">真过拟合</span></td><td><span class="pill p-orange">换赛道，未过拟合/未训透</span></td><td><span class="pill p-green">健康，到配置边界</span></td></tr>
+    </table>
+    <h3>3.1 哪些 loss 能比、哪些不能</h3>
+    <table>
+      <tr><th class="l">对比</th><th class="l">同时改变的变量</th><th>loss 是否可比</th></tr>
+      <tr><td class="l">实验1 → 实验2</td><td class="l">词表、语料规模与内容、采样模式、上下文、batch（5 个）</td><td><span class="pill p-red">严格不可比</span></td></tr>
+      <tr><td class="l">实验2 → 实验3</td><td class="l">参数量、数据量、训练时长（词表/模式/上下文相同）</td><td><span class="pill p-green">同 token 空间，方向可比</span></td></tr>
+      <tr><td class="l">实验3 内部各 epoch</td><td class="l">仅训练进度（resume 处有学习率重启）</td><td><span class="pill p-blue">可比</span></td></tr>
+    </table>
+    <div class="callout c-risk"><b class="t">方法论教训（下一阶段必须避免）</b>实验1→2 一次动了 5 个变量，导致单看数值会误判「越训越差（3.79→4.28）」。规模化阶段必须<b>控制变量、一次只松一个轴</b>，否则无法对 loss 的升降归因。</div>
+
+    <!-- 时间线 -->
+    <h3>3.2 演进时间线</h3>
+    <div class="timeline">
+      <div class="tl-node"><div class="tl-dot" style="background:var(--red);">1</div><div class="tl-body"><b>baseline</b>6.3M / 20M / slide<br>val 3.792 钉死，过拟合</div></div>
+      <div class="tl-node"><div class="tl-dot" style="background:var(--orange);">2</div><div class="tl-body"><b>pack 换轨</b>6.3M / 120M / pack<br>val 4.277（不可比），gap≈0</div></div>
+      <div class="tl-node"><div class="tl-dot" style="background:var(--blue);">3a</div><div class="tl-body"><b>20M 一阶段</b>E1 val 4.021 停滞<br>cosine 归零 → 伪收敛</div></div>
+      <div class="tl-node"><div class="tl-dot" style="background:var(--green);">3b</div><div class="tl-body"><b>warm restart</b>3.701→3.636<br>gap 0.02，无过拟合</div></div>
+      <div class="tl-node"><div class="tl-dot" style="background:#6b7689;">4</div><div class="tl-body"><b>受控定位</b>A 容量 / B 上下文 / C 数据<br>单变量找第一瓶颈</div></div>
+      <div class="tl-node"><div class="tl-dot" style="background:var(--purple);">5</div><div class="tl-body"><b>组合扩张</b>35–41M / 512 / ~1B<br>按 20:1 配比落地</div></div>
+    </div>
+  </section>
+
+  <!-- 4 逐轮 -->
+  <section id="s4">
+    <h2>4. 逐轮深度复盘：为什么变、loss 为什么这样走</h2>
+
+    <h3>4.1 实验1：最小闭环跑通，但撞上「小数据 × 重叠滑窗」的真过拟合</h3>
+    <h4>为什么这样配置</h4>
+    <p>目标是先打通「语料→BPE→模型→生成」全链路。slide <code>stride=1</code> 是教科书式标准切法（每个起点一个样本），在小语料上能制造大量样本、梯度更平滑；batch=512 的大 batch 也利于初期稳定。这是<b>工程验证导向</b>的合理起点，不是为规模化准备的。</p>
+    <h4>loss 现象与机制</h4>
+    <p>E0 train 3.550 / val 3.792，到 E2 train 3.286 而 val 3.794：<b>train 单调下降，val 三个 epoch 几乎不动（3.792/3.792/3.794）</b>。机制有两层：</p>
+    <ul>
+      <li><b>数据相对参数太少</b>：仅 20M token 供养 6.3M 参数，独立信息量不足，模型开始记忆训练集的局部 token 共现；</li>
+      <li><b>slide stride=1 放大重复曝光</b>：每个 token 会出现在 block_size=128 个窗口里，同一段文本在一个 epoch 内被高度相关地重复学习 128 次，「窗口数 ≈2000 万」是假象，<b>有效独立样本量远小于窗口数</b>，进一步鼓励死记。验证集是没见过的书，背下来的局部统计迁移不过去。</li>
+    </ul>
+    <p>于是 train 持续下行、val 原地踏步，gap（训练口径）由 0.242 走阔到 0.508。</p>
+    <div class="callout c-risk"><b class="t">判定：真过拟合（高方差）</b>三件套同时成立——train↓、val 平/微↑、gap 持续走阔。<b>不是</b>欠拟合，因此对症的药是「更多独立数据 + 降低重复曝光（pack）」，而不是加大模型（加大只会更过拟合）。</div>
+
+    <h3>4.2 实验2：一次工程换轨，4.277 是「新赛道的起点」而非退步</h3>
+    <h4>为什么一次改这么多</h4>
+    <p>这一步的性质是<b>基础设施升级</b>而非单超参调优：语料扩到 120M 后，slide stride=1 的每-epoch 步数≈token 数（千万级），CPU/IO 无法承受，必须改 pack（每 token 每 epoch 只看一次，步数降到约 1/block）；同时把词表扩到 6144 以提升中文覆盖与压缩，block 128→256 提升连贯性。多变量同换在「换基建」时可以接受，但代价是 loss 不能与实验1 对照。</p>
+    <h4>为什么数值反而「更高」</h4>
+    <ul>
+      <li><b>token 空间变了</b>：vocab 3256→6144，随机基线从 ln3256=8.09 抬到 ln6144=8.72；分词粒度改变后，同一句中文被切成<b>不同的 token 序列</b>，交叉熵是对不同目标分布求期望，数值尺度天然不同；</li>
+      <li><b>任务分布变了</b>：语料从 20M 扩到 120M 且覆盖更广，难度分布不同；</li>
+      <li><b>梯度相关性变了</b>：block 变大、pack 不重叠，单步梯度的统计结构不同于 slide。</li>
+    </ul>
+    <h4>真正有价值的信号：过拟合消失</h4>
+    <p>E0 train/val=5.475/5.479、E5=4.258/4.277，<b>gap 仅 0.004 / 0.019，两条线几乎重合且一起在降</b>。这说明数据侧不再稀缺，模型来到「数据充足、容量与训练量不足」的一侧（未训透/偏欠拟合）。此时正确动作是<b>加容量、加训练、继续加数据</b>，而非加正则。</p>
+    <div class="callout c-warn"><b class="t">记录缺口（不臆造）</b>实验2 仅留存 E0、E5 两个点，E1–E4 曲线缺失，本报告不做插值；4.277 止步于容量与训练时长，不能归因于数据。</div>
+
+    <h3>4.3 实验3：扩容见效，但先被调度「假收敛」绊了一下</h3>
+    <h4>为什么扩到 20M / 400M</h4>
+    <p>实验2 已证明矛盾不在过拟合、而在容量与训练充分度，于是参数 6.3M→20M（10 层/d384）、数据 120M→400M，继续 pack、词表与上下文保持不变（保证与实验2 同尺度可比）。</p>
+    <h4>第一阶段 4.021 停滞：根因是 cosine 提前归零</h4>
+    <p>E1 结束 train 4.005 / val 4.021 后不再下降。根因是 cosine 按<b>第一阶段设定的总步数</b>在 E1 末衰减到了 0，有效学习率≈0，参数几乎停止更新，loss 被「冻」在当前值。这是<b>优化器调度问题（伪收敛/假平台）</b>，不是模型容量到顶，也不是数据耗尽。</p>
+    <h4>resume / warm restart 为什么能救回来</h4>
+    <p><code>--resume</code> 恢复权重、优化器、AMP 与 step，同时 cosine 按新的总 epoch 重新锚定，学习率从底部重新拉起，给模型逃离平台区的「二次动量」。随后 E2 3.701 → step25k 3.687 → E3 3.647 → E4 3.636，累计再降 0.385。</p>
+    <h4>最终形态解读</h4>
+    <ul>
+      <li>E5–E6 连续持平 3.636，train_eval 3.616，<b>gap≈0.020 且很小 → 没有过拟合</b>；</li>
+      <li>但连续两轮不降 → 在「20M / 256 / 400M」三者锁定下到达<b>收益递减点</b>；</li>
+      <li>用 Chinchilla 回看：400M ÷ 20.11M = <b>19.9 token/param</b>，正好落在 20:1 最优线上——当前不是单纯「模型太小」或「数据太少」，而是<b>参数与数据同时到达互相匹配的边界</b>。</li>
+    </ul>
+  </section>
+
+  <!-- 5 判据 -->
+  <section id="s5">
+    <h2>5. 过拟合 / 欠拟合 / 伪收敛判据体系</h2>
+    <p>用四个可观测联合判断：<code>train_eval</code> 趋势、<code>val</code> 趋势、<code>gap = val − train_eval</code>、当前 <code>lr</code>。</p>
+    <table>
+      <tr><th class="l">状态</th><th>train_eval</th><th>val</th><th>gap</th><th>lr</th><th class="l">对症动作</th></tr>
+      <tr><td class="l">健康下降</td><td>↓</td><td>↓</td><td>稳定且 ≤0.05</td><td>正常</td><td class="l">继续训练</td></tr>
+      <tr><td class="l">过拟合（高方差）</td><td>持续 ↓</td><td>平 / ↑</td><td><span class="pill p-red">走阔 &gt;0.05</span></td><td>正常</td><td class="l">加数据、降模型、加 dropout、减少重复曝光</td></tr>
+      <tr><td class="l">欠拟合 / 未训透（高偏差）</td><td colspan="2">都偏高且一起 ↓</td><td><span class="pill p-green">极小</span></td><td>正常</td><td class="l">加容量、加训练时长、适当提 lr</td></tr>
+      <tr><td class="l">伪收敛（调度故障）</td><td colspan="2">平台不动</td><td>小</td><td><span class="pill p-orange">≈0</span></td><td class="l">修 scheduler / warm restart，<b>勿误判为容量极限</b></td></tr>
+      <tr><td class="l">收益递减（到配置边界）</td><td>低位</td><td>连续 2–3 次验证不动</td><td>小</td><td>正常</td><td class="l">改轴：扩数据 / 扩容量 / 扩上下文</td></tr>
+    </table>
+
+    <h3>5.1 三种 loss 形态示意（依据本项目真实曲线归纳）</h3>
+    <div class="tri">
+      <div class="pane">
+        <h4 style="color:var(--red);">过拟合（实验1）</h4>
+        <svg viewBox="0 0 220 120" width="100%" height="120" role="img" aria-label="过拟合示意">
+          <line x1="24" y1="10" x2="24" y2="100" stroke="#c9d2e0"/><line x1="24" y1="100" x2="210" y2="100" stroke="#c9d2e0"/>
+          <polyline points="30,40 70,58 110,72 150,82 200,90" fill="none" stroke="#2f9e74" stroke-width="2.2"/>
+          <polyline points="30,34 70,33 110,34 150,35 200,37" fill="none" stroke="#d2604f" stroke-width="2.2"/>
+          <text x="150" y="26" font-size="10" fill="#d2604f">val 钉死</text>
+          <text x="150" y="86" font-size="10" fill="#2f9e74">train↓</text>
+        </svg>
+        <p>train 下行、val 水平，gap 越拉越大。</p>
+      </div>
+      <div class="pane">
+        <h4 style="color:var(--green);">健康（实验3）</h4>
+        <svg viewBox="0 0 220 120" width="100%" height="120" role="img" aria-label="健康下降示意">
+          <line x1="24" y1="10" x2="24" y2="100" stroke="#c9d2e0"/><line x1="24" y1="100" x2="210" y2="100" stroke="#c9d2e0"/>
+          <polyline points="30,28 70,46 110,62 150,76 200,84" fill="none" stroke="#2f9e74" stroke-width="2.2"/>
+          <polyline points="30,22 70,42 110,58 150,73 200,81" fill="none" stroke="#3d7bd6" stroke-width="2.2"/>
+          <text x="120" y="20" font-size="10" fill="#3d7bd6">train/val 贴近同降</text>
+        </svg>
+        <p>两条线一起降、始终贴近，gap≈0.02。</p>
+      </div>
+      <div class="pane">
+        <h4 style="color:var(--orange);">伪收敛→重启（实验3一阶段）</h4>
+        <svg viewBox="0 0 220 120" width="100%" height="120" role="img" aria-label="伪收敛示意">
+          <line x1="24" y1="10" x2="24" y2="100" stroke="#c9d2e0"/><line x1="24" y1="100" x2="210" y2="100" stroke="#c9d2e0"/>
+          <polyline points="30,40 70,52 100,54 118,54" fill="none" stroke="#dd923c" stroke-width="2.2"/>
+          <line x1="118" y1="48" x2="118" y2="92" stroke="#9aa4b2" stroke-dasharray="3 2"/>
+          <polyline points="122,54 150,68 185,84 205,88" fill="none" stroke="#dd923c" stroke-width="2.2"/>
+          <text x="72" y="46" font-size="9" fill="#dd923c">lr≈0 平台</text>
+          <text x="126" y="44" font-size="9" fill="#7a6fd0">restart</text>
+        </svg>
+        <p>平台是因 lr 归零；重启后继续降。</p>
+      </div>
+    </div>
+    <p class="legend">示意（非逐点拟合）：<i style="background:#2f9e74;"></i>train / train_eval<i style="background:#d2604f;"></i>val 过拟合<i style="background:#3d7bd6;"></i>val 健康<i style="background:#dd923c;"></i>val 伪收敛</p>
+    <div class="callout c-key"><b class="t">口径纪律</b>① 必须用 eval 模式（关 dropout）在 train/val 的<b>同分布随机子集</b>上算 gap（代码已实现 train_eval）；训练时 EMA、epoch 平均都带 dropout 噪声且是滑动量，直接减 val 会虚高——实验1 历史数字即训练口径，会偏大，但「走阔」方向不变。② 跨实验比较请固定同一验证子集与随机种子，否则验证抽样噪声会制造「假改善/假恶化」。③ PPL=exp(loss)（当前 37.9）只在<b>同词表</b>下可比。</div>
+  </section>
+
+  <!-- 6 瓶颈 -->
+  <section id="s6">
+    <h2>6. 当前瓶颈：容量 / 上下文 / 数据 三轴</h2>
+    <table>
+      <tr><th class="l">轴</th><th class="l">现状证据</th><th class="l">松开的代价 / 前提</th><th class="l">若单独猛加会怎样</th></tr>
+      <tr><td class="l"><b>数据</b></td><td class="l">400M 对 20M 恰为 19.9:1，处于最优</td><td class="l">webnovel 1 分片 ≈1B，清洗/编码成本（多进程已解决）</td><td class="l">只加数据不加参数 → 算力浪费，边际递减</td></tr>
+      <tr><td class="l"><b>容量</b></td><td class="l">gap 仅 0.02、train_eval 已到 3.616，现约束下接近吃满</td><td class="l">参数↑，显存与计算↑；需数据配套</td><td class="l">35–50M 配 400M → token/param 掉到 8–13，<b>偏向过拟合</b></td></tr>
+      <tr><td class="l"><b>上下文</b></td><td class="l">block256 对小说人物/伏笔/多轮对话偏短</td><td class="l">注意力 O(T²)≈4 倍、激活显存↑（SDPA 已就绪）；pack 每 epoch 样本数减半，需重算总步数</td><td class="l">不增参数，可独立验证，风险最低</td></tr>
+    </table>
+    <div class="callout c-warn"><b class="t">关键结构：两轴耦合、一轴独立</b>「容量」与「数据」是<b>绑定</b>的——必须按约 20:1 一起扩；「上下文」不增参数，是可以<b>单独先验证</b>的独立轴。仅凭现有日志无法断言第一瓶颈是谁，因此需要第 7 节的受控实验来定位，而不是三轴一起梭哈（那会重蹈实验1→2 不可比的覆辙）。</div>
+  </section>
+
+  <!-- 7 实验设计 -->
+  <section id="s7">
+    <h2>7. 下一阶段受控实验设计</h2>
+    <h3>7.1 统一纪律（每个实验都遵守）</h3>
+    <ul>
+      <li><b>一次只动一个轴</b>；固定复用现有 6144 分词器（<code>tokenizer_best.pkl</code>）编码新语料，保证 loss 尺度可比；</li>
+      <li>固定同一验证子集与随机种子；每轮记录 <code>train_eval / val / gap / lr</code> 四元组；</li>
+      <li><code>total_steps = steps_per_epoch × epochs</code> 按 pack 实际步数重算，cosine 用 <code>min_lr_ratio=0.1</code>，不再衰减到 0；</li>
+      <li>以当前 3.636 为对照锚点，每个实验预先写明「通过 / 否决」判据与停止条件。</li>
+    </ul>
+    <h3>7.2 实验矩阵</h3>
+    <table>
+      <tr><th>实验</th><th class="l">改动（相对当前，仅一列变化）</th><th class="l">预期与判据（通过 / 否决）</th></tr>
+      <tr><td><b>Exp4-A</b><br>容量轴</td><td class="l">20M→35M（10L/d512）；block256、batch256、数据仍 400M</td><td class="l"><span class="pill p-blue">诊断性</span>若 gap 明显走阔 → 数据是瓶颈（佐证必须同步 C）；若 val↓且 gap 仍小 → 容量是瓶颈。允许轻微过拟合以换取信息。</td></tr>
+      <tr><td><b>Exp4-B</b><br>上下文轴</td><td class="l">20M/400M 不变；block 256→512，batch 256→128（tokens/update 守恒 65536）</td><td class="l">val 显著低于 3.636 → 长程是瓶颈；若持平 → 256 已够。注意 PE max_len、样本数减半、重算步数、用 SDPA。</td></tr>
+      <tr><td><b>Exp4-C</b><br>数据轴</td><td class="l">20M/256 不变；400M→≈1B（webnovel 单分片），复用 6144 分词器</td><td class="l">val 破 3.636 且 gap 更小 → 数据是瓶颈；几乎不动 → 20M 容量到顶。</td></tr>
+      <tr><td><b>Exp5</b><br>组合</td><td class="l">按 A/B/C 结论：35M(10L/512) 或 41M(12L/512) + block512/batch128 + 0.7–1B，token/param≈20–28</td><td class="l">目标稳定低于 3.636 且 gap≤0.05；patience 2–3；cosine 完整衰减到底部 0.1。</td></tr>
+    </table>
+    <h3>7.3 命令草案（基于现有 train.py，可直接并入 RESUME_B_PLAN）</h3>
+    <div class="cmd"><span class="cm"># Exp4-B 上下文轴（风险最低，建议最先跑）：只改 block 与 batch</span>
+python train/train.py --train-txt data/train_lightnovel_all.txt --val-txt data/val_lightnovel_all.txt \
+  --sample-mode pack --n-layer 10 --n-head 8 --n-embd 384 --vocab-size 6144 --tie-embeddings \
+  --block-size 512 --batch-size 128 --lr 8e-4 --warmup-steps 500 --min-lr-ratio 0.1 \
+  --weight-decay 0.05 --epochs 6 --out-dir result_b512
+
+<span class="cm"># Exp4-A 容量轴（诊断）：35M = 10L/d512，数据暂留 400M</span>
+python train/train.py ... --sample-mode pack --n-layer 10 --n-embd 512 \
+  --block-size 256 --batch-size 256 --epochs 6 --out-dir result_w35
+
+<span class="cm"># Exp4-C 数据轴：20M/256 不变，仅换 ~1B 语料（复用同词表编码）</span>
+python train/train.py --train-txt data/train_webnovel_v2.txt --val-txt data/val_webnovel_v2.txt \
+  --sample-mode pack --n-layer 10 --n-embd 384 --block-size 256 --batch-size 256 \
+  --vocab-size 6144 --tie-embeddings --epochs 3 --out-dir result_1b
+
+<span class="cm"># Exp5 组合：41M = 12L/d512 + block512/batch128 + ~1B</span>
+python train/train.py --train-txt data/train_webnovel_v2.txt --val-txt data/val_webnovel_v2.txt \
+  --sample-mode pack --n-layer 12 --n-head 8 --n-embd 512 --vocab-size 6144 --tie-embeddings \
+  --block-size 512 --batch-size 128 --lr 8e-4 --warmup-steps 500 --min-lr-ratio 0.1 \
+  --weight-decay 0.05 --epochs 3 --out-dir result_webnovel</div>
+    <div class="callout c-warn"><b class="t">对 RESUME_B_PLAN 草案的一处数值纠正</b>草案写「n_embd512 × 10 层 ≈40M」，按公式精确复算为 <b>34.68M（≈35M）</b>；要落到 40M+ 应使用 <b>12 层/d512 = 40.98M</b>。其余（SDPA 是 block512 前提、先用 1 分片、min_lr_ratio）判断正确。</div>
+  </section>
+
+  <!-- 8 Scaling -->
+  <section id="s8">
+    <h2>8. Scaling 建议与配置表</h2>
+    <h3>8.1 参数—数据配比（以已验证的 20:1 为锚）</h3>
+    <p>当前 400M/20.11M=19.9 已实证落在 Chinchilla 最优线，故以此标定下一档配置（公式见 9.1，均经复算）：</p>
+    <table>
+      <tr><th>档位</th><th>L / d / heads</th><th>可训练参数</th><th>20:1 最优 token</th><th>block / batch</th><th>tokens/update</th></tr>
+      <tr><td>当前</td><td>10 / 384 / 8</td><td>20.11M</td><td>≈402M（实配 400M）</td><td>256 / 256</td><td>65,536</td></tr>
+      <tr><td>候选</td><td>8 / 512 / 8</td><td>28.37M</td><td>≈567M</td><td>512 / 128</td><td>65,536</td></tr>
+      <tr><td><b>首选</b></td><td>10 / 512 / 8</td><td><b>34.68M</b></td><td>≈694M</td><td>512 / 128</td><td>65,536</td></tr>
+      <tr><td>候选</td><td>12 / 512 / 8</td><td>40.98M</td><td>≈820M</td><td>512 / 128</td><td>65,536</td></tr>
+      <tr><td>上限</td><td>12 / 576 / 8</td><td>51.41M</td><td>≈1.03B</td><td>512 / 128</td><td>65,536</td></tr>
+    </table>
+    <p class="small">webnovel 单分片约 1B，恰好覆盖到约 50M；三分片约 3B 对 30–50M 严重过量，先用 1 分片、不够再加。</p>
+
+    <h3>8.2 分轴建议</h3>
+    <ul>
+      <li><b>上下文（优先、独立）</b>：256→512 先做，<code>batch 256→128</code> 保持 tokens/update=65,536（256×256 与 128×512 经复算完全相等），稳住梯度噪声尺度；512 在 4090 + SDPA 可行，1024 因 O(T²) 与激活显存需先评估。</li>
+      <li><b>模型形状</b>：优先「加宽 + 适度加深」，d=512、8 头时 head_dim=64 规整；暂不建议先动头数。ReLU→GELU 这类改动会引入新变量，如要尝试须<b>单独消融</b>，不要与扩容混跑。</li>
+      <li><b>优化器 / 正则</b>：35M+ 若初期不稳，lr 8e-4→6e-4、warmup 维持 500；gap 走阔再把 dropout 0.1→0.15，若 gap≈0 反而可降到 0.05；weight_decay 0.05 维持。</li>
+      <li><b>词表</b>：固定 6144 复用，保障跨实验可比；仅当新语料压缩率明显恶化、OOV 飙升时，才把「扩词表」作为独立轴——历史已证明换词表会让旧 loss 全部失去可比性，代价高。</li>
+      <li><b>调度铁律</b>：按 pack 实际步数设 total_steps，cosine 保留 10% 底（已修复），warm restart 只作补救；杜绝再次出现「4.021 伪收敛」。</li>
+      <li><b>数据卫生</b>：坚持按真书 90/10（prepare_webnovel 已实现），防止整本书落入验证集高估 loss；新旧语料混配要记录比例。</li>
+    </ul>
+    <div class="callout c-good"><b class="t">一句话路线</b>先并行排期 B（上下文，成本最低）与 C（数据扩到 ~1B），用 A（35M 压 400M）做诊断性压力测试；三者结论汇合后，Exp5 落 <b>35–41M + block512 + 0.7–1B</b>，token/param 控制在 20–28，稳扎稳打突破 3.636。</div>
+  </section>
+
+  <!-- 9 附录 -->
+  <section id="s9">
+    <h2>9. 附录：公式推导、证据与口径</h2>
+    <h3>9.1 参数量公式（tie 共享、8 头、FFN=4d）</h3>
+    <div class="formula">每层参数 = 注意力 4·(d²+d)  +  FFN (8d²+5d)  +  两个 LayerNorm (4d)
+        = 12d² + 13d
+总参数 P = V·d + L·(12d²+13d) + 2d + V
+  （V·d 为共享嵌入，仅计一次；2d 为最终 LN；V 为输出偏置）</div>
+    <ul>
+      <li>代入 d=384, L=10, V=6144 → <b>20,110,848</b>，与 checkpoint 实测一致（交叉验证通过）；</li>
+      <li>d=256, L=6, V=6144 → 6,318,080（6.3M，对应实验2）；</li>
+      <li>同结构 V=3256 → 5,575,864；若<b>不做 tie</b> 需再加输出头 3256×256=833,536，得 6,409,400≈6.3M —— 与实验1 标称 6.3M 吻合，据此<b>推断实验1 早期未做权重共享</b>（推断，非代码直接证据）。</li>
+    </ul>
+    <h3>9.2 关键复算</h3>
+    <ul>
+      <li>tokens/update：256×256 = 65,536 ＝ 128×512（上下文翻倍、batch 减半时守恒）；</li>
+      <li>token/param：400,000,000 / 20,110,848 = 19.89；1,000,000,000 / 34,676,736 = 28.84；</li>
+      <li>随机基线 ln(3256)=8.088、ln(6144)=8.723 nats；当前 PPL = e^3.636 = 37.94。</li>
+    </ul>
+    <h3>9.3 证据来源与不确定性声明</h3>
+    <ul>
+      <li>实验数值来自你提供的 Experiment History；架构与训练机制来自 <code>model/</code>、<code>data/</code>、<code>train/train.py</code> 源码；参数量为公式复算并经 <code>result_20m_all/checkpoint_best.pt</code> 加载实测。</li>
+      <li><b>不可比</b>：实验1（vocab3256）与实验2/3（vocab6144）的 loss 不可直接横比。</li>
+      <li><b>缺失不补</b>：实验2 仅 E0/E5、实验3 train_eval 仅首尾有记录，缺失点未插值；对应图表如实断点。</li>
+      <li><b>推断标注</b>：「实验1 未 tie」为参数量反推结论；「第一瓶颈归属」需由 Exp4 实测确定，本报告不预先下定论。</li>
+    </ul>
+    <p class="small">报告生成于 2026-09-04。配套文件：MiniGPT_实验数据看板.html（ECharts 交互图表，离线可用）。</p>
+  </section>
+
+</div>
+</body>
+</html>

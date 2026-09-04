@@ -1,0 +1,68 @@
+# =====================================================================
+# experiment_config_v2.yaml — 下一次训练固定配置（v2）
+# 创建：2026-09-05 ｜ 对应计划：RESUME_B_PLAN.md（B 组恢复清单）
+# 说明：train.py 当前走命令行参数，本文件是 v2 实验的“唯一事实来源”，
+#       开跑前按最下方等价命令逐项核对。val loss 单位 nats。
+# =====================================================================
+
+meta:
+  name: v2_webnovel_1B        # 实验名（结果目录 / 日志标注用）
+  version: v2                 # 配置版本
+  date: 2026-09-05
+  commit: 32dc820             # 创建时 HEAD 短哈希；训练前如有新提交需更新
+  params_est: "~20M"          # 估算参数量（10L/8H/384d/6144/tie，与 20M 版同架构）
+
+# ---------- 模型 ----------
+model:
+  n_layer: 10
+  n_embd: 384
+  n_head: 8
+  block_size: 512             # 上下文长度；需 SDPA（attention.py 已含）
+  vocab_size: 6144
+  tie_embeddings: true        # 输入/输出嵌入共享（大词表必备）
+  dropout: 0.1
+
+# ---------- 数据 ----------
+data:
+  tokens: 1B                  # 训练集 token 数（webnovel 1 个分片 ≈ 10 亿）
+  mode: pack                  # 不重叠打包（100M+ 语料每 epoch 分钟级）
+  version: webnovel_v2        # prepare_webnovel.py 产物（短书 <30000 字符已丢弃）
+  train_txt: data/train_webnovel_v2.txt
+  val_txt: data/val_webnovel_v2.txt
+  cache_dir: data
+  tokens_sample: 4000000      # 训练分词器采样字符数（均匀撒 100 段全语料）
+
+# ---------- 训练 ----------
+training:
+  batch_size: 128
+  lr: 8e-4                    # 峰值学习率
+  min_lr: 5e-5                # cosine 底部学习率（绝对）；= lr × 0.0625
+  warmup: 1000                # warmup 步数
+  epochs: 1                   # 1 轮 = 过完 1B token，正合 Chinchilla(20M)≈1B 建议；不够再加
+  weight_decay: 0.05
+  grad_clip: 1.0
+  val_every: 5000             # 每多少步验证一次（0=仅 epoch 末）
+  patience: 2                 # 连续几次验证不改善即早停
+  eval_batches: 100           # 验证时 train/val 各算的随机批数（算 gap 用）
+
+# ---------- 运行时 ----------
+runtime:
+  out_dir: result_webnovel_v2 # checkpoint / tokenizer 输出目录
+  log_dir: log                # 验证历史 CSV 目录
+  device: cuda                # 云端 4090
+  amp: true
+  num_workers: 8
+  encode_workers: 16          # BPE 首次编码并行进程数
+
+# =====================================================================
+# 等价训练命令（开跑前按本文件逐项核对）
+# 注意：train.py 的 --min-lr-ratio 是相对值，min_lr=5e-5 对应 ratio = 5e-5/8e-4 = 0.0625
+# =====================================================================
+# python train/train.py \
+#   --train-txt data/train_webnovel_v2.txt --val-txt data/val_webnovel_v2.txt \
+#   --sample-mode pack --batch-size 128 --block-size 512 \
+#   --n-layer 10 --n-head 8 --n-embd 384 \
+#   --vocab-size 6144 --tie-embeddings --tokens-sample 4000000 \
+#   --lr 8e-4 --min-lr-ratio 0.0625 --warmup-steps 1000 --weight-decay 0.05 \
+#   --epochs 1 --val-every 5000 --patience 2 --eval-batches 100 \
+#   --out-dir result_webnovel_v2 --cache-dir data

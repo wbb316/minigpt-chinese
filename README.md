@@ -103,8 +103,18 @@ minigpt-chinese/
 ├── generate.py             # 生成 + KV cache 一致性验证 + 计时
 ├── visualize_attention.py  # 注意力热力图（hook 版，不改模型）
 ├── plot_loss.py            # 训练曲线
-└── scratch/                # 早期 PyTorch 学习脚本（CIFAR/MNIST 教程）
+├── scratch/                # 早期 PyTorch 学习脚本（CIFAR/MNIST 教程）
+└── docs/                   # 项目管理文档（见下表）
 ```
+
+### 📁 项目管理文档（docs/）
+
+| 文件 | 用途 |
+|---|---|
+| `MiniGPT_Project_Status.md` | 项目状态文件——**改代码前先读**：当前阶段/约定/坑点/日志格式 |
+| `EXPERIMENT_LOG.md` | 训练实验日志（每次训练完追加一行，含 commit/配置/val loss） |
+| `experiment_config_v2.yaml` | v2 实验固定配置（webnovel ~1B token） |
+| `report_output/` | 实验复盘 HTML 报告 |
 
 ## 🚀 快速开始
 
