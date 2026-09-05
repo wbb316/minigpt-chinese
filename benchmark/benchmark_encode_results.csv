@@ -1,0 +1,3 @@
+mode,chars,time_sec,peak_rss_mb,tokens
+single,100000000,64.02,686.0,85551202
+multiproc,100000000,26.03,2.0,85551202

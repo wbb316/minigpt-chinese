@@ -24,11 +24,14 @@ import hashlib
 import json
 import multiprocessing as mp
 import os
+import re
 import sys
 
 import numpy as np
 
 from data.tokenizer import PRETOK_RE  # noqa: E402
+
+_WS_RE = re.compile(r'\s+')
 
 _VERSION = 1
 
@@ -41,37 +44,58 @@ def _worker_init(tok):
 
 
 def _split_points(text: str, n_parts: int):
-    """在预分词块间隙处取 n_parts-1 个尽量均匀的切分点（字符索引）。
+    """取 n_parts-1 个尽量均匀的"安全切分点"（字符索引）。
 
-    保证每个切分点落在两个 chunk 之间（空白/标点区），
-    因此每片独立 encode 的结果 == 整段 encode（逐 token 一致）。
-    若无足够间隙（极端文本），退化为按字符均分（可能跨块，仅用于极端兜底）。
+    安全切分点定义：落在**空白区段内部**（\\s+ 匹配的内部）。
+    因为空白串是独立预分词 chunk、merge 永不跨 chunk，空白内部任意切分后
+    每片独立 encode == 整段 encode（逐 token 一致）。
+
+    说明：PRETOK_RE = \\w+|[^\\w\\s]|\\s+ 对文本无缝覆盖，chunk 之间没有间隙；
+    但 \\s+ chunk 内部是安全切分区（切在空白中间不影响任何 merge）。
     """
-    spans = [(m.start(), m.end()) for m in PRETOK_RE.finditer(text)]
-    gaps = []
-    for i in range(len(spans) - 1):
-        a_end = spans[i][1]
-        b_start = spans[i + 1][0]
-        if b_start > a_end:
-            gaps.append((a_end + b_start) // 2)
-    if not gaps:
-        # 退化：无空白分隔的极端文本（几乎不会发生）
-        return [len(text) * k // n_parts for k in range(1, n_parts)]
-    step = len(gaps) / n_parts
-    return [gaps[int(step * k)] for k in range(1, n_parts)]
+    if n_parts <= 1:
+        return []
+    # 所有空白区段 [start, end)
+    ws_spans = [(m.start(), m.end()) for m in _WS_RE.finditer(text)]
+    if not ws_spans:
+        # 极端：完全没有空白（罕见），无法安全切分 → 返回空（单片处理）
+        return []
+    # 均匀取切分点：优先落在大空白区段中部
+    cuts = []
+    total = len(text)
+    for k in range(1, n_parts):
+        target = total * k // n_parts
+        # 找包含 target 的空白区段；否则找最近的空白区段中部
+        best = None
+        for s, e in ws_spans:
+            mid = (s + e) // 2
+            if s <= target < e:
+                best = mid
+                break
+            if best is None or abs(mid - target) < abs(best - target):
+                best = mid
+        cuts.append(best)
+    # 去重、保序
+    cuts = sorted(set(cuts))
+    return cuts
 
 
 def _encode_write(args):
-    """worker: 编码一段文本并直接写 uint16 bin 文件。返回元数据（小）。"""
-    text, path = args
+    """worker: 从 txt 分片读文本 → 编码 → 直接写 uint16 bin。返回元数据（小）。
+
+    args = (txt_path, bin_path)。文本经文件传递，不走 multiprocessing IPC
+    （spawn 模式下大字符串 pickle 传输极慢）。
+    """
+    txt_path, bin_path = args
+    with open(txt_path, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
     ids = _ENC_TOK.encode(text)
     arr = np.asarray(ids, dtype=np.uint16)
-    # 原子写：先写临时再 rename（避免半截文件被读到）
-    tmp = path + '.tmp'
+    tmp = bin_path + '.tmp'
     arr.tofile(tmp)
-    os.replace(tmp, path)
+    os.replace(tmp, bin_path)
     return {
-        'path': path,
+        'path': bin_path,
         'token_count': len(ids),
         'chars_count': len(text),
     }
@@ -100,25 +124,31 @@ def encode_to_cache(text: str, tokenizer, cache_dir: str, tag: str,
     if n_procs <= 1 or len(text) < 2_000_000:
         n_procs = 1
 
-    # 分块：每块 ~n_procs×~1M 字符 → worker 各编码一片
+    # 分片：整段文本在所有预分词块间隙处切分（全局切分，绝无块边界切断 chunk）
+    # 目标每片 ~1.5M 字符（控制单 worker 内存），片数 = ceil(len / 1.5M)
+    target_parts = max(n_procs, (len(text) + 1_500_000 - 1) // 1_500_000)
+    cuts = _split_points(text, target_parts)
+    pts = [0] + cuts + [len(text)]
+    # 相邻切分点可能很近（间隙密集），合并过小的片
     jobs = []
-    n_chunks = max(1, (len(text) + chunk_chars - 1) // chunk_chars)
-    chunk_size = (len(text) + n_chunks - 1) // n_chunks
-    print(f'编码 {len(text):,} 字符 → {n_chunks} 块 × {n_procs} worker '
-          f'(uint16 分片落盘) ...', flush=True)
+    txt_dir = os.path.join(cache_path, '_txt')
+    os.makedirs(txt_dir, exist_ok=True)
+    pieces = []
+    for pi in range(len(pts) - 1):
+        sub = text[pts[pi]:pts[pi + 1]]
+        if sub:
+            pieces.append(sub)
+    del text
 
-    for ci in range(n_chunks):
-        c_start = ci * chunk_size
-        c_end = min(len(text), c_start + chunk_size)
-        c_text = text[c_start:c_end]
-        cuts = _split_points(c_text, n_procs)
-        pts = [0] + cuts + [len(c_text)]
-        for pi in range(len(pts) - 1):
-            sub = c_text[pts[pi]:pts[pi + 1]]
-            if not sub:
-                continue
-            path = os.path.join(cache_path, f'shard_{ci:03d}_{pi:03d}.bin')
-            jobs.append((sub, path))
+    print(f'编码 → {len(pieces)} 片 × {n_procs} worker '
+          f'(uint16 分片落盘，全部切分点在块间隙) ...', flush=True)
+    for pi, sub in enumerate(pieces):
+        txt_path = os.path.join(txt_dir, f'part_{pi:04d}.txt')
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(sub)
+        bin_path = os.path.join(cache_path, f'shard_{pi:04d}.bin')
+        jobs.append((txt_path, bin_path))
+    del pieces
 
     meta_list = []
     if n_procs > 1:
@@ -154,6 +184,9 @@ def encode_to_cache(text: str, tokenizer, cache_dir: str, tag: str,
     }
     with open(os.path.join(cache_path, 'index.json'), 'w', encoding='utf-8') as f:
         json.dump(index, f, ensure_ascii=False, indent=1)
+    # 清理临时 txt 分片（编码已完成，不再需要）
+    import shutil
+    shutil.rmtree(txt_dir, ignore_errors=True)
     print(f'编码完成: {total_chars:,} 字符 → {total_tokens:,} tokens '
           f'({total_tokens/1e6:.0f}M) → {cache_path}')
     return cache_path
