@@ -40,6 +40,7 @@ sys.path.insert(0, ROOT)
 
 from data.tokenizer import BPETokenizer, EOS_ID  # noqa: E402
 from data.dataset import TextDataset, PackedDataset   # noqa: E402
+from data.token_cache import encode_to_cache, ShardMemmap  # noqa: E402
 from model.gpt import GPT                     # noqa: E402
 
 
@@ -100,6 +101,10 @@ def main():
                         help='BPE 训练后端：legacy=v2 原实现；fast=lazy heap 提速版'
                              '（与 legacy 输出完全等价，vocab>=3256 时 2.5-6.5x 加速；'
                              '等价性由 test/test_tokenizer_train_equivalence.py 保证）')
+    parser.add_argument('--cache-format', default='shards',
+                        choices=['shards', 'legacy'],
+                        help='token 缓存格式：shards=uint16 分片 memmap（默认，省内存/磁盘）；'
+                             'legacy=旧版单文件 int64 npy（兼容老缓存）')
     # 数据 / 模型
     parser.add_argument('--sample-mode', default='slide', choices=['pack', 'slide'],
                         help='slide=滑动窗口 stride=1(默认)；pack=不重叠打包(每轮步数少 ~128 倍)')
@@ -178,13 +183,27 @@ def main():
     vocab_size = len(tokenizer.vocab)
 
     def get_tokens(text, name):
-        # 缓存名带 tokenizer 版本/采样量/语料长度: 任何一个变了都自动失效重建
+        """语料 → token 视图。
+
+        - shards 格式（默认）：uint16 分片 + memmap，不整载内存
+        - legacy 格式：旧版单文件 int64 npy（兼容老缓存）
+        """
+        if args.cache_format == 'shards':
+            cache_path = encode_to_cache(
+                text, tokenizer, cache_dir, name,
+                n_procs=args.encode_workers)
+            mm = ShardMemmap(cache_path)
+            print(f'加载 {name}: {len(mm):,} token (uint16 memmap, '
+                  f'{mm.index["n_shards"]} 分片)')
+            return mm
+
+        # ---- legacy: 单文件 int64 npy（旧行为）----
         cache_path = os.path.join(
             cache_dir,
             f'tokens_{name}_v{vocab_size}_s{args.tokens_sample}_len{len(text)}_tokv2.npy')
         if os.path.exists(cache_path):
-            tokens = np.load(cache_path)                 # int64 ndarray
-            print(f'从缓存加载 {name}: {len(tokens)} token')
+            tokens = np.load(cache_path)
+            print(f'从缓存加载 {name}: {len(tokens)} token (legacy int64)')
             return tokens
         tokens = encode_text(text, tokenizer, args.encode_workers)
         np.save(cache_path, tokens)
@@ -193,7 +212,8 @@ def main():
 
     train_tokens = get_tokens(train_text, 'train')
     val_tokens = get_tokens(val_text, 'val')
-    print(f'训练集 {len(train_tokens)} token, 验证集 {len(val_tokens)} token')
+    print(f'训练集 {len(train_tokens):,} token, '
+          f'验证集 {len(val_tokens):,} token')
 
     # ---------- 数据集 / DataLoader ----------
     if args.sample_mode == 'pack':

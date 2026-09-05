@@ -6,6 +6,9 @@
 两种模式底层都是整块 tensor 视图切片（零拷贝），替换掉旧的
 "Python list 逐样本切片 + torch.tensor()" 写法（20M token 的 list ≈ 720MB，
 且每个样本都要新建 tensor，数据加载成为瓶颈）。
+
+v2 (encode pipeline 专项): 支持 uint16 memmap 分片（data/token_cache.py 的
+ShardMemmap）——不再 np.load 整段转 int64，而是按需切片 uint16 → torch.long。
 """
 import numpy as np
 import torch
@@ -13,7 +16,10 @@ from torch.utils.data import Dataset
 
 
 def _as_tensor(tokens):
-    """list / numpy 数组 → torch.LongTensor（numpy 走零拷贝 from_numpy）。"""
+    """list / numpy 数组 / ShardMemmap → torch.LongTensor 的惰性来源。
+
+    对 ShardMemmap（uint16 memmap）不整载：__getitem__ 时才切片转 long。
+    """
     if isinstance(tokens, torch.Tensor):
         return tokens.long()
     if isinstance(tokens, np.ndarray):
@@ -23,22 +29,39 @@ def _as_tensor(tokens):
     return torch.tensor(tokens, dtype=torch.long)
 
 
+def _is_memmap(tokens):
+    return type(tokens).__name__ == 'ShardMemmap'
+
+
 class TextDataset(Dataset):
     """滑动窗口（stride=1）：每个 token 出现在 block_size 个窗口里。
 
     与旧版语义完全一致，但 __getitem__ 是整块 tensor 的视图切片，零拷贝。
     样本数 = len(tokens) - block_size（最后不够一个窗口的部分舍弃）。
+    支持 uint16 ShardMemmap（按需切片，不整载）。
     """
 
     def __init__(self, tokens, block_size: int = 128):
-        self.tokens = _as_tensor(tokens)
+        self.memmap = _is_memmap(tokens)
         self.block_size = block_size
-        self.num_samples = len(self.tokens) - block_size
+        if self.memmap:
+            self._n = len(tokens)
+            self._tokens = tokens
+        else:
+            self.tokens = _as_tensor(tokens)
+            self._n = len(self.tokens)
+        self.num_samples = self._n - block_size
 
     def __len__(self) -> int:
         return self.num_samples
 
     def __getitem__(self, idx: int):
+        if self.memmap:
+            x = self._tokens[idx:idx + self.block_size]
+            y = self._tokens[idx + 1:idx + 1 + self.block_size]
+            # memmap 只读：显式拷贝转 long（.copy 后 from_numpy 无警告）
+            return (torch.from_numpy(np.array(x, copy=True)).long(),
+                    torch.from_numpy(np.array(y, copy=True)).long())
         x = self.tokens[idx:idx + self.block_size]
         y = self.tokens[idx + 1:idx + 1 + self.block_size]
         return x, y
@@ -50,20 +73,44 @@ class PackedDataset(Dataset):
     每 token 每 epoch 只看 1 次 → 每 epoch 步数少、CPU 上快 ~100 倍；
     代价是窗口边界处的跨序列依赖看不到（对 block_size 内依赖无影响）。
     offset 可错开切分位置（val 用它避免与 train 恰好切在同一处）。
+    支持 uint16 ShardMemmap（按需切片，不整载）。
     """
 
     def __init__(self, tokens, block_size: int = 128, offset: int = 0):
-        arr = _as_tensor(tokens)
-        if offset:
-            arr = arr[offset:]
-        n = (len(arr) - 1) // block_size
-        if n <= 0:
-            raise ValueError(f'语料太短: {len(arr)} token，至少需要 block_size+1={block_size + 1}')
-        self.x = arr[:n * block_size].view(n, block_size)          # 视图，不复制
-        self.y = arr[1:n * block_size + 1].view(n, block_size)
+        self.memmap = _is_memmap(tokens)
+        self.block_size = block_size
+        self._offset = offset
+        if self.memmap:
+            self._n = len(tokens) - offset
+            self._tokens = tokens
+            arr = tokens[offset:offset + self._n * block_size + 1]
+            # 只取需要长度，验证够长
+            n = (self._n - 1) // block_size
+            if n <= 0:
+                raise ValueError(
+                    f'语料太短: {len(tokens)} token，至少需要 '
+                    f'block_size+1={block_size + 1}')
+            self._num = n
+        else:
+            arr = _as_tensor(tokens)
+            if offset:
+                arr = arr[offset:]
+            n = (len(arr) - 1) // block_size
+            if n <= 0:
+                raise ValueError(f'语料太短: {len(arr)} token，'
+                                 f'至少需要 block_size+1={block_size + 1}')
+            self.x = arr[:n * block_size].view(n, block_size)
+            self.y = arr[1:n * block_size + 1].view(n, block_size)
+            self._num = n
 
     def __len__(self) -> int:
-        return len(self.x)
+        return self._num
 
     def __getitem__(self, idx: int):
+        if self.memmap:
+            start = self._offset + idx * self.block_size
+            x = self._tokens[start:start + self.block_size]
+            y = self._tokens[start + 1:start + 1 + self.block_size]
+            return (torch.from_numpy(np.array(x, copy=True)).long(),
+                    torch.from_numpy(np.array(y, copy=True)).long())
         return self.x[idx], self.y[idx]
