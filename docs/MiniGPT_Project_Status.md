@@ -11,17 +11,18 @@
 
 ## 当前阶段
 
-- [ ] **B 组暂停中**（用户决定过几天再训）→ 恢复步骤见 `RESUME_B_PLAN.md`（根目录）
+- [x] **v2 首跑完成**（2026-09-05）：35M / 998M token / ctx512 / vocab6144，best val **3.708**（详见 EXPERIMENT_LOG；**未破 20M 纪录且 tokenizer/语料不同，不可直接比**）
 - [x] 语料下载完成：`D:\小说\webnovel\webnovel_{0,1,2}.jsonl` 各 ~3.9GB（合计 11.7GB，~148 万行 / ~2790 本，均已验证无 JSON 错误）
-- [ ] 待办：本地清洗 shard0 → `data/train|val_webnovel_v2.txt`（`python data/prepare_webnovel.py --shards 0`）
-- [ ] v2 实验配置（**候选冻结**，状态：**待训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— **仅为计划，尚未验证有效，不要当作已确定结论**
-- [ ] 训练目标：v2 用 webnovel_v2 语料（1 分片 ≈ 10 亿 token），期望 val < 3.636（20M 版纪录）
+- [x] 清洗完成：shard0 → `data/train|val_webnovel_v2.txt`（云端 `/root/autodl-tmp/data/`，train 12.4 亿字符 / val 1.44 亿字符）
+- [x] v2 实验配置已跑（**已训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— 实际 batch 因 4090 OOM 从 128 降为 64（总 token 不变）
+- [ ] 训练目标未达成：v2 val 3.708 **未低于** 3.636（20M 版纪录）——但两者 tokenizer/语料不同，**不属于可比实验**，不能下"35M 不如 20M"结论
 
 ## Current Best Checkpoint
 
 - **Best known model: 20M_final**（10L/8H/384d/bs256/vocab6144/tie）
 - **Best val_loss: 3.636**（nats；checkpoint: `result_20m_all/checkpoint_best.pt`）
 - **Do not overwrite unless a new experiment improves it.**
+- v2 (35M, 2026-09-05): val 3.708，**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result_webnovel_v2/checkpoint_best.pt`
 
 > 最新 ≠ 最好：跑失败/半成品实验时，**不要覆盖 `checkpoint_best.pt`**，也不要以最新 checkpoint 当作最佳结论。
 
@@ -32,6 +33,7 @@
 | 百合基线 | 7.2M | 7L/8H/256d/bs128/vocab3256 | 百合 35 本 | 3.79 | ≈85460d5 |
 | LN 修复 | 6.3M | 6L/8H/256d/bs256/vocab6144/tie | 轻小说 v0 | 4.188 | ≈7a4bf61 |
 | 20M 最终 | 20M | 10L/8H/384d/bs256/vocab6144/tie | v0+v1 (4.16亿 token) | 3.636 | ≈20393f0 |
+| v2 首跑 | 35M | 10L/8H/512d/bs512/vocab6144/tie | webnovel_v2 shard0 (9.98亿) | 3.708 | 614d325 |
 
 > 完整记录在 `docs/EXPERIMENT_LOG.md`；豆包复盘报告在 `docs/report_output/`。
 > 比较条件见「实验比较规则」一节（val loss 单位 nats）。
@@ -49,10 +51,10 @@
 
 ## 当前未知问题
 
-- v2 配置（1B token / block 512 / batch 128）**尚未训练验证**，能否达到 val < 3.636 未知
+- v2（3.708）数值上未破 20M 纪录（3.636），但 **tokenizer/语料不同不可直接比**；同 tokenizer + 同 val 集下的 35M vs 20M 增益仍无可比数据
 - 20M 模型继续堆数据（4.16亿 → 10 亿 token）是否继续降 loss 未验证
-- block 512 在 SDPA 下的显存占用、训练速度、长程收益未实测
-- 更大模型（35M/50M）相对 20M 的增益未验证
+- block 512 相对 256 的长程收益未在同一语料上验证
+- 更大模型（50M）相对 35M/20M 的增益未验证
 - 中文生成质量无系统评估，目前仅主观观感
 
 ## 下一阶段计划
