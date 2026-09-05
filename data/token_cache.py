@@ -52,28 +52,45 @@ def _split_points(text: str, n_parts: int):
 
     说明：PRETOK_RE = \\w+|[^\\w\\s]|\\s+ 对文本无缝覆盖，chunk 之间没有间隙；
     但 \\s+ chunk 内部是安全切分区（切在空白中间不影响任何 merge）。
+
+    性能（3.6GB 全量语料修复）：
+    旧实现是 O(n_parts × n_ws) 双重循环——12.4 亿字符 ≈ 2390 万空白区段、
+    n_parts≈828 → 198 亿次 Python 迭代，卡死数小时。
+    空白区段天然有序 → 现在一次 finditer 存 int64 数组后 numpy 二分，
+    每切分点 O(log n_ws)，毫秒级完成；语义与旧实现完全一致
+    （含"优先取包含 target 的段中部、否则取 mid 最近段、平分取更早段"）。
     """
     if n_parts <= 1:
         return []
-    # 所有空白区段 [start, end)
-    ws_spans = [(m.start(), m.end()) for m in _WS_RE.finditer(text)]
-    if not ws_spans:
+    # 所有空白区段 [start, end)，交错存 start/end 进单个 int64 数组（紧凑）
+    def _gen():
+        for m in _WS_RE.finditer(text):
+            yield m.start()
+            yield m.end()
+    a = np.fromiter(_gen(), dtype=np.int64)
+    if a.size == 0:
         # 极端：完全没有空白（罕见），无法安全切分 → 返回空（单片处理）
         return []
-    # 均匀取切分点：优先落在大空白区段中部
-    cuts = []
+    s = a[0::2]
+    e = a[1::2]
+    mids = (s + e) // 2  # 空白区段不重叠且有序 → mid 单调不减
     total = len(text)
+    cuts = []
     for k in range(1, n_parts):
         target = total * k // n_parts
-        # 找包含 target 的空白区段；否则找最近的空白区段中部
+        # 优先：target 是否落在某空白区段内部（区段不重叠，至多一段命中）
+        i = int(np.searchsorted(s, target, side='right')) - 1
+        if i >= 0 and target < e[i]:
+            cuts.append(int(mids[i]))
+            continue
+        # 否则取 mid 离 target 最近的区段（mid 单调 → 只需比较相邻两个候选）
+        j = int(np.searchsorted(mids, target, side='left'))
         best = None
-        for s, e in ws_spans:
-            mid = (s + e) // 2
-            if s <= target < e:
-                best = mid
-                break
-            if best is None or abs(mid - target) < abs(best - target):
-                best = mid
+        for cand in (j - 1, j):
+            if 0 <= cand < len(mids):
+                m = int(mids[cand])
+                if best is None or abs(m - target) < abs(best - target):
+                    best = m
         cuts.append(best)
     # 去重、保序
     cuts = sorted(set(cuts))
