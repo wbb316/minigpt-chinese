@@ -10,12 +10,12 @@ meta:
   version: v2                 # 配置版本
   date: 2026-09-05
   commit: 32dc820             # 创建时 HEAD 短哈希；训练前如有新提交需更新
-  params_est: "~20M"          # 估算参数量（10L/8H/384d/6144/tie，与 20M 版同架构）
+  params_est: "~35M"          # 估算参数量（10L/8H/512d/6144/tie）；B 组目标 30-50M
 
 # ---------- 模型 ----------
 model:
   n_layer: 10
-  n_embd: 384
+  n_embd: 512                 # 384→512：20M → ~35M（进 B 组 30-50M 目标）
   n_head: 8
   block_size: 512             # 上下文长度；需 SDPA（attention.py 已含）
   vocab_size: 6144
@@ -34,11 +34,11 @@ data:
 
 # ---------- 训练 ----------
 training:
-  batch_size: 128
+  batch_size: 128             # SDPA + AMP 下 4090 可承受；OOM 就降 64
   lr: 8e-4                    # 峰值学习率
   min_lr: 5e-5                # cosine 底部学习率（绝对）；= lr × 0.0625
   warmup: 1000                # warmup 步数
-  epochs: 1                   # 1 轮 = 过完 1B token，正合 Chinchilla(20M)≈1B 建议；不够再加
+  epochs: 1                   # 1 轮 = 过完 1B token；Chinchilla(35M)≈7 亿 token，1B 略多但可接受
   weight_decay: 0.05
   grad_clip: 1.0
   val_every: 5000             # 每多少步验证一次（0=仅 epoch 末）
@@ -61,7 +61,7 @@ runtime:
 # python train/train.py \
 #   --train-txt data/train_webnovel_v2.txt --val-txt data/val_webnovel_v2.txt \
 #   --sample-mode pack --batch-size 128 --block-size 512 \
-#   --n-layer 10 --n-head 8 --n-embd 384 \
+#   --n-layer 10 --n-head 8 --n-embd 512 \
 #   --vocab-size 6144 --tie-embeddings --tokens-sample 4000000 \
 #   --lr 8e-4 --min-lr-ratio 0.0625 --warmup-steps 1000 --weight-decay 0.05 \
 #   --epochs 1 --val-every 5000 --patience 2 --eval-batches 100 \

@@ -14,7 +14,7 @@
 - [ ] **B 组暂停中**（用户决定过几天再训）→ 恢复步骤见 `RESUME_B_PLAN.md`（根目录）
 - [x] 语料下载完成：`D:\小说\webnovel\webnovel_{0,1,2}.jsonl` 各 ~3.9GB（合计 11.7GB，~148 万行 / ~2790 本，均已验证无 JSON 错误）
 - [ ] 待办：本地清洗 shard0 → `data/train|val_webnovel_v2.txt`（`python data/prepare_webnovel.py --shards 0`）
-- [ ] v2 实验配置（**候选冻结**，状态：**待训练验证**）：`docs/experiment_config_v2.yaml`（10L/384d/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— **仅为计划，尚未验证有效，不要当作已确定结论**
+- [ ] v2 实验配置（**候选冻结**，状态：**待训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— **仅为计划，尚未验证有效，不要当作已确定结论**
 - [ ] 训练目标：v2 用 webnovel_v2 语料（1 分片 ≈ 10 亿 token），期望 val < 3.636（20M 版纪录）
 
 ## Current Best Checkpoint
@@ -39,7 +39,7 @@
 ## 已验证结论
 
 - **增加参数 + 数据有效**：20M(3.636) < LN 修复版(4.188)（同 vocab6144/tokenizer 下可比）
-- **验证集按文件/按书划分**显著降低 val loss（4.5 → 3.79，百合基线）
+- **验证集按文件/按书划分**：为避免数据泄漏（按 token 顺序切可能把整本书放进 val，评估失真）而设，使评估结果更可靠；不同实验版本的 loss 变化（如 4.5 → 3.79）**不能归因于单一因素**
 - **标准 LayerNorm**（有偏方差 + eps）收敛更稳、val 更好
 - **pack 模式**（stride=block_size）使 100M+ 语料每 epoch 从小时级降到分钟级
 - **SDPA 训练路径**省显存，是 block_size > 256 的前提
@@ -59,17 +59,21 @@
 
 1. 恢复 B 组：数据扩到 ~1B token（webnovel_v2，先 1 分片）+ 模型 20M → 35M/50M + 上下文 512
 2. v2 首跑验证（配置见 `docs/experiment_config_v2.yaml`），目标 val < 3.636
-3. 按下方 Scaling 原则**单变量**逐步验证，一次只动一个变量
 
-### Scaling 原则
+### Scaling 原则（两阶段）
 
-当前已验证：**增加参数有效**（20M < LN 修复版）。
-下一阶段优先验证，按顺序：
-1. 参数规模（20M → 35M/50M）
-2. context 长度（block 512）
-3. 数据规模（4.16亿 → 10 亿 token）
+**第一阶段 — v2 综合升级实验（非单变量）**：
+v2 同时升级三个维度——模型扩大（20M → 35M/50M）、context 增加（block 256 → 512）、数据增加（4.16亿 → ~1B token）。
+目的：**验证整体 scaling 收益**（v2 有效 = 三个维度整体方向正确）。
+> v2 是综合升级实验，**不属于严格单变量实验**，请勿要求它按单变量标准归因。
 
-**不要同时修改 tokenizer 和训练目标**，避免一次大改导致无法归因。
+**第二阶段 — 单变量拆解**：
+若 v2 有效，再通过单变量实验分别拆解各维度贡献：
+1. 参数规模贡献
+2. context 贡献
+3. 数据规模贡献
+
+**约束**：不要同时修改 tokenizer 和训练目标（tokenizer/vocab 改动独立于 scaling 实验，避免一次大改导致无法归因）。
 
 ## 代码约束（改代码时遵守）
 
@@ -96,12 +100,30 @@
 
 ## 关键坑点（踩过）
 
-1. 验证集必须**按文件/按书划分**，不能按 token 顺序切（否则高估 loss）
+1. 验证集必须**按文件/按书划分**，不能按 token 顺序切——按 token 切可能造成数据泄漏（val 含训练未见的整本书）、高估 loss，评估不可靠
 2. 判断过拟合看 `gap = val - train_eval`（eval 无 dropout），不是裸 val
 3. tokenizer v2 哨兵：SEP=-1/DEAD=-2 是节点值不参与合并，别当邻居处理
 4. resume 会重锚 cosine（warm restart，lr 跳回）——加轮次续训的正常现象
 5. Windows 下 encode 并行退回单线程；云端多进程才有加速
 6. tqdm 写 stderr 会让 pwsh 误报 exit 1——看输出内容而非退出码
+
+## Experiment ID 规则
+
+统一实验命名格式：
+
+```
+v{版本}_{模型}_ctx{context}_{数据规模}
+```
+
+示例：
+- `v1_20M_ctx256_400M`（20M 最终版）
+- `v2_35M_ctx512_1B`（v2 综合升级实验）
+
+以下位置**统一使用该 ID**（新建实验时按格式命名）：
+- checkpoint 输出目录
+- log 文件（step/val 历史 CSV、run_config）
+- `EXPERIMENT_LOG.md` 记录
+- HTML 报告
 
 ## 日志规范
 
