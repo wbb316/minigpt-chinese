@@ -102,6 +102,9 @@ def main():
     ap.add_argument('--vocab', type=int, default=0,
                     help='只跑指定 vocab (1024/3256/6144); 0=全部')
     ap.add_argument('--chars', type=int, default=0, help='自定义字符数')
+    ap.add_argument('--fast-only', action='store_true',
+                    help='只测 fast（不跑 legacy reference，不校验等价性）——'
+                         '用于大语料生产耗时实测（如 4M/6144）')
     args = ap.parse_args()
 
     stages = {1: 200_000, 2: 1_000_000, 3: 4_000_000}
@@ -118,6 +121,25 @@ def main():
         text = load_text(chars)
         print(f'\n=== 语料 {label} 字符 (实际 {len(text):,}) ===', flush=True)
         for vocab in vocabs:
+            if args.fast_only:
+                print(f'--- vocab {vocab} / fast (仅测, 不跑 legacy) ---', flush=True)
+                t_fast, peak_fast, tok_fast = train_and_measure(
+                    text, vocab, 'fast')
+                n_merges = len(tok_fast.merges)
+                print(f'  fast {t_fast:.1f}s | merges {n_merges} | '
+                      f'RSS {peak_fast:.0f}MB')
+                results.append({
+                    'trainer': 'fast', 'sample_chars': len(text), 'vocab': vocab,
+                    'time_sec': round(t_fast, 2),
+                    'peak_rss_mb': round(peak_fast, 1),
+                    'merges_sec': round(n_merges / t_fast, 1),
+                    'final_vocab': len(tok_fast.vocab),
+                    'merge_count': n_merges, 'equivalent': 'n/a(fast-only)',
+                })
+                del tok_fast
+                gc.collect()
+                continue
+
             # legacy first（拿 reference + 计时）
             print(f'--- vocab {vocab} / legacy ---', flush=True)
             t_legacy, peak_legacy, tok_legacy = train_and_measure(
@@ -157,11 +179,17 @@ def main():
             del tok_legacy, tok_fast
             gc.collect()
 
+    # 写入：若已有结果文件则合并（保留历史 stage 数据），避免覆盖
+    old_rows = []
+    if os.path.exists(OUT_CSV) and os.path.getsize(OUT_CSV) > 0:
+        with open(OUT_CSV, encoding='utf-8') as f:
+            old_rows = list(csv.DictReader(f))
+    merged = old_rows + results
     with open(OUT_CSV, 'w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+        w = csv.DictWriter(f, fieldnames=list(merged[0].keys()))
         w.writeheader()
-        w.writerows(results)
-    print(f'\n✅ 结果已写: {OUT_CSV}')
+        w.writerows(merged)
+    print(f'\n✅ 结果已写: {OUT_CSV} (总 {len(merged)} 行)')
     # 摘要
     for r in results:
         if r['trainer'] == 'fast':

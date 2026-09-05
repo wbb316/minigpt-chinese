@@ -24,6 +24,9 @@ data/train.txt
 data/val.txt
 data/train_lightnovel*.txt
 data/val_lightnovel*.txt
+data/train_webnovel*.txt
+data/val_webnovel*.txt
+data/*.txt.gz
 data/*.npy
 data/tokens_*.npy
 data/*_v*.npy
