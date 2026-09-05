@@ -96,6 +96,10 @@ def main():
                         help='词表总大小 = 256字节 + merges；6.4M 参数推荐 6144（配 tie 嵌入防嵌入层过大）')
     parser.add_argument('--tokens-sample', type=int, default=4_000_000,
                         help='训练分词器用采样字符数（均匀撒 100 段全语料；2M 对 6144 已够，4M 为 8192 或求稳留余量）')
+    parser.add_argument('--bpe-trainer', default='legacy', choices=['legacy', 'fast'],
+                        help='BPE 训练后端：legacy=v2 原实现；fast=lazy heap 提速版'
+                             '（与 legacy 输出完全等价，vocab>=3256 时 2.5-6.5x 加速；'
+                             '等价性由 test/test_tokenizer_train_equivalence.py 保证）')
     # 数据 / 模型
     parser.add_argument('--sample-mode', default='slide', choices=['pack', 'slide'],
                         help='slide=滑动窗口 stride=1(默认)；pack=不重叠打包(每轮步数少 ~128 倍)')
@@ -165,7 +169,7 @@ def main():
         sample_parts = [train_text[s:s + seg_len]
                         for s in range(0, len(train_text), step)][:100]
         tokenizer = BPETokenizer(vocab_size=args.vocab_size)
-        tokenizer.train(''.join(sample_parts))
+        tokenizer.train(''.join(sample_parts), backend=args.bpe_trainer)
         with open(tok_cache_path, 'wb') as f:
             pickle.dump(tokenizer, f)
         print(f'tokenizer词表大小：{len(tokenizer.vocab)}（已缓存 → {tok_cache_path}）')
