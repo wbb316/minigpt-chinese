@@ -53,6 +53,19 @@ def dedupe_params(module):
     return list({id(p): p for p in module.parameters()}.values())
 
 
+def _opt_step_count(optimizer):
+    """optimizer 累计完成的真实参数更新次数（版本无关，从 state['step'] 读）。
+
+    AMP GradScaler 检测到 overflow 时会跳过 optimizer.step（state 不变），
+    用 step 前后计数比较即可判断本步是否真正更新了参数。
+    """
+    for s in optimizer.state.values():
+        st = s.get('step')
+        if st is not None:
+            return float(st)
+    return 0.0
+
+
 # ---------- 并行 BPE 编码（487M 字符单线程要 30-60 分钟, 分片并行后几分钟） ----------
 _ENC_TOK = None
 
@@ -126,6 +139,10 @@ def main():
     parser.add_argument('--min-lr-ratio', type=float, default=0.1,
                         help='cosine 衰减底部学习率 = max_lr × 该比例（默认 0.1，不再衰减到 0，'
                              '保留尾部学习能力；设 0.0 恢复衰减到 0）')
+    parser.add_argument('--lr-scheme', default='cosine', choices=['cosine', 'const'],
+                        help='LR 调度：cosine=warmup+cosine 衰减（默认，从头训练）；'
+                             'const=恒 lr=max_lr×min_lr_ratio（--resume 续跑 Epoch2+ 用：'
+                             '从上一轮尾 lr 继续，不重铺 cosine，杜绝 resume 首步 LR 突跳）')
     parser.add_argument('--grad-clip', type=float, default=1.0)
     # 验证 / 早停
     parser.add_argument('--val-every', type=int, default=5000,
@@ -259,7 +276,11 @@ def main():
     optimizer = torch.optim.AdamW(dedupe_params(gpt), lr=args.lr,
                                   weight_decay=args.weight_decay)
 
-    # ---------- warmup + cosine 调度 ----------
+    # ---------- LR 调度（cosine / const 恒温续训） ----------
+    # cosine: warmup + cosine 衰减到 max_lr×min_ratio（默认路径，从头训练）
+    # const : 恒 lr = max_lr×min_ratio —— 给 --resume 续跑 Epoch2+ 用：
+    #         从上一轮尾 lr 继续，不按新 total_steps 重铺 cosine（重铺会使
+    #         resume 首步 LR 从 5e-5 突跳回 ~4.35e-4，见 docs/RESUME_AUDIT.md §2）
     warmup = args.warmup_steps
     min_ratio = max(0.0, args.min_lr_ratio)          # 底部学习率比例（默认 0.1）
 
@@ -271,15 +292,28 @@ def main():
         # cosine 从 1.0 衰减到 min_ratio（默认 0.1，不归零 → 尾部保留学习能力）
         return min_ratio + 0.5 * (1.0 - min_ratio) * (1.0 + math.cos(math.pi * t))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    if args.lr_scheme == 'const':
+        # 恒 lr = max_lr × min_ratio；lambda 与 step 无关 → step() 幂等、无跳变
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda s: min_ratio)
+        print(f'LR 方案: const（恒 {args.lr * min_ratio:.2e}，'
+              f'continuation 用，不重铺 cosine）')
+    else:
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        print(f'LR 方案: cosine（warmup {warmup} 步 → '
+              f'衰减到 {args.lr * min_ratio:.2e}）')
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
 
     # ---------- 断点续训（加轮数: --resume <latest> --epochs 更大的总数） ----------
+    # epoch 语义（见 docs/RESUME_AUDIT.md §1）：checkpoint 存 next_epoch =
+    #   "该 checkpoint 之后下一个要跑的 epoch"（epoch 末保存 = epoch+1；步级验证保存 = epoch）。
+    # resume: start_epoch = next_epoch → for range(start_epoch, epochs) 不会重复已完成 epoch。
     resume_path = resolve(args.resume) if args.resume else None
     start_epoch = 0
     global_step0 = 0
     best_val0 = float('inf')
     no_improve0 = 0
+    tok_total0 = None          # checkpoint 里的精确 tokens_seen（旧包无 → None）
     if resume_path:
         if os.path.exists(resume_path):
             ck = torch.load(resume_path, map_location=device, weights_only=True)
@@ -288,12 +322,18 @@ def main():
             if use_amp and ck.get('scaler') is not None:
                 scaler.load_state_dict(ck['scaler'])
             global_step0 = int(ck.get('step', 0))
-            start_epoch = int(ck.get('epoch', 0))
+            start_epoch = int(ck.get('next_epoch', ck.get('epoch', 0)))
             best_val0 = float(ck.get('best_val', float('inf')))
             no_improve0 = int(ck.get('no_improve', 0))
-            scheduler.last_epoch = global_step0 - 1   # 让下一步的 lr 与断点衔接
-            print(f'📥 续训: 从 step {global_step0} / epoch {start_epoch} 继续'
-                  f'（原 best_val {best_val0:.3f}；lr 将按新的总轮数重铺 cosine）')
+            tok_total0 = ck.get('tokens_seen')
+            if args.lr_scheme == 'cosine':
+                # 仅 cosine 需要重锚（const 的 lambda 与 step 无关，设了也无副作用）
+                scheduler.last_epoch = global_step0 - 1
+            print(f'📥 续训: 从 step {global_step0} / next_epoch {start_epoch} 继续'
+                  f'（原 best_val {best_val0:.3f}）')
+            if args.lr_scheme == 'cosine':
+                print(f'  ⚠️ 注意: --lr-scheme cosine 会按新总步数重铺 LR，'
+                      f'resume 首步 lr 可能跳变——续跑请用 --lr-scheme const')
         else:
             print(f'⚠️ 未找到 resume 文件: {resume_path}，从头训练')
 
@@ -322,6 +362,7 @@ def main():
         f'  batch_size:       {args.batch_size}',
         f'  tokens_per_step:  {args.batch_size * args.block_size:,}',
         f'  lr:               {args.lr}',
+        f'  lr_scheme:        {args.lr_scheme}',
         f'  warmup_steps:     {args.warmup_steps}',
         f'  decay_steps:      {max(0, total_steps - args.warmup_steps)}',
         f'  total_steps:      {total_steps}',
@@ -364,14 +405,22 @@ def main():
     latest_path = os.path.join(out_dir, 'checkpoint_latest.pt')
     tok_latest_path = os.path.join(out_dir, 'tokenizer_latest.pkl')
 
-    def save_checkpoint(tag, ckpt_path, tok_path, full=False):
-        """full=True 存完整续训包(模型+优化器+步数)；否则只存纯 state_dict(推理用)。"""
+    def save_checkpoint(tag, ckpt_path, tok_path, full=False, next_epoch=None):
+        """full=True 存完整续训包(模型+优化器+步数)；否则只存纯 state_dict(推理用)。
+
+        next_epoch: 该 checkpoint 之后下一个要跑的 epoch——
+                    epoch 末验证传 epoch+1（本 epoch 已完成）；
+                    步级验证传当前 epoch（本 epoch 未完成，resume 后重跑）。
+        """
         if full:
+            ne = (epoch + 1) if next_epoch is None else next_epoch
             torch.save({'model': gpt.state_dict(),
                         'optimizer': optimizer.state_dict(),
                         'scaler': scaler.state_dict() if scaler else None,
                         'step': global_step,
                         'epoch': epoch,
+                        'next_epoch': ne,
+                        'tokens_seen': tok_total,
                         'best_val': best_val,
                         'no_improve': no_improve}, ckpt_path)
         else:
@@ -384,6 +433,10 @@ def main():
     best_val = best_val0
     no_improve = no_improve0
     global_step = global_step0
+    amp_skip_steps = 0                                  # AMP 跳过（未更新）的步数
+    # tokens_seen 精确累计：resume 优先用 checkpoint 存的精确值；旧包无则按步数×batch 近似
+    tok_total = (tok_total0 if tok_total0 is not None
+                 else global_step0 * args.batch_size * args.block_size)
     last_val_step = -1
     ema = None
     stopped = False
@@ -422,8 +475,9 @@ def main():
         _last_flush_step = global_step
 
     def append_step_row(train_loss_ema, val_loss=None):
-        """每步调一次; val_loss 非 None(验证步) 时带上。"""
-        tok = global_step * args.batch_size * args.block_size   # 全局 token 数
+        """每步调一次; val_loss 非 None(验证步) 时带上。
+        tok_total 由主循环按 x.numel() 精确累计（尾批不按满 batch 计，见 §D）。"""
+        tok = tok_total
         ep = tok / max(1, len(train_tokens))                    # 进度(按 token 计)
         val_s = f'{val_loss:.4f}' if val_loss is not None else ''
         row = (f'{global_step},{ep:.3f},{tok},{train_loss_ema:.4f},{val_s},'
@@ -451,6 +505,9 @@ def main():
     def run_validation(where):
         """验证一次；返回是否触发早停。"""
         nonlocal best_val, no_improve
+        # epoch 末验证 → 本 epoch 已完成，next_epoch = epoch+1；步级验证 → 本 epoch 未完成
+        is_epoch_end = where.startswith('epoch ') and where.endswith(' 结束')
+        next_epoch_val = (epoch + 1) if is_epoch_end else epoch
         val_loss = eval_loss(val_eval_loader)
         msg = f'[{where}] val {val_loss:.3f}'
         train_ev = gap = None
@@ -471,7 +528,8 @@ def main():
         else:
             no_improve += 1
             tqdm.write(f'  ⚠️ val 未改善 ({no_improve}/{args.patience})')
-        save_checkpoint('最近模型', latest_path, tok_latest_path, full=True)   # 完整续训包
+        save_checkpoint('最近模型', latest_path, tok_latest_path, full=True,
+                        next_epoch=next_epoch_val)   # 完整续训包（含 next_epoch/tokens_seen）
         log_validation_row(where, val_loss, train_ev, gap, lr_now, is_best)
         if no_improve >= args.patience:
             tqdm.write(f'🚫 早停: val 连续 {args.patience} 次验证未改善，停止训练')
@@ -503,19 +561,33 @@ def main():
             else:
                 loss.backward()
             torch.nn.utils.clip_grad_norm_(dedupe_params(gpt), args.grad_clip)
+
+            # ---- 更新门控（docs/RESUME_AUDIT.md §3）：仅当 optimizer 确实完成
+            #      参数更新才推进 scheduler/global_step/tokens_seen/step 行 ----
+            # AMP GradScaler 检测到 overflow 会跳过 optimizer.step →
+            # 该步不算训练步：不步进 scheduler（否则触发 "scheduler.step before
+            # optimizer.step" warning 且 LR 计数错位）、不累计进度。
             if use_amp:
+                cnt0 = _opt_step_count(optimizer)
                 scaler.step(optimizer)
                 scaler.update()
+                updated = _opt_step_count(optimizer) > cnt0
             else:
                 optimizer.step()
-            scheduler.step()
+                updated = True
 
-            running += loss.item()
-            steps_here += 1
-            global_step += 1
-            ema = loss.item() if ema is None else 0.99 * ema + 0.01 * loss.item()
-            pbar.set_postfix(loss=f'{ema:.3f}', lr=f'{scheduler.get_last_lr()[0]:.1e}')
-            append_step_row(ema)                       # ★ 每步记一行 (tokens_seen/lr/...)
+            if updated:
+                scheduler.step()
+                running += loss.item()
+                steps_here += 1
+                global_step += 1
+                tok_total += x.numel()       # 精确 token（尾批按实际 numel，§D）
+                ema = loss.item() if ema is None else 0.99 * ema + 0.01 * loss.item()
+                pbar.set_postfix(loss=f'{ema:.3f}',
+                                 lr=f'{scheduler.get_last_lr()[0]:.1e}')
+                append_step_row(ema)         # ★ 每步记一行 (tokens_seen/lr/...)
+            else:
+                amp_skip_steps += 1          # AMP overflow 跳过（不消耗进度）
 
             if args.max_steps and global_step >= args.max_steps:
                 stopped = True
@@ -528,7 +600,9 @@ def main():
 
         flush_step_rows()                              # epoch 末把缓冲落盘
         tqdm.write(f'epoch {epoch} 平均 train loss: {running / max(steps_here, 1):.3f} '
-                   f'(EMA {ema:.3f}) — 已完成 {global_step}/{total_steps} 步')
+                   f'(EMA {ema:.3f}; AMP skipped {amp_skip_steps} 步) '
+                   f'— 已完成 {global_step}/{total_steps} 步, '
+                   f'tokens_seen={tok_total:,.0f}')
         # epoch 末总是验证一次（与步级验证同一步时自动去重），保证任何模式下都会保存 checkpoint
         if not stopped:
             if maybe_validate(f'epoch {epoch} 结束'):
@@ -541,6 +615,8 @@ def main():
     tqdm.write(f'训练结束。最佳模型: {best_path} (val {best_val:.3f})')
     tqdm.write(f'📈 验证历史: {val_csv_path}')
     tqdm.write(f'📈 step 历史: {step_csv_path}')
+    tqdm.write(f'📊 tokens_seen 合计: {tok_total:,.0f}'
+               + (f'（AMP skipped {amp_skip_steps} 步）' if amp_skip_steps else ''))
 
 
 if __name__ == '__main__':
