@@ -276,26 +276,38 @@ class BPETokenizer:
 
     # ---------------- 编码（预分词, 块内栈式合并） ----------------
     def encode(self, text: str, verbose=False) -> list[int]:
-        """文本 → token id 列表。按块编码: 合并永不跨块, 每块独立栈式合并。"""
-        out = []
-        for chunk in PRETOK_RE.findall(text):
-            raw = chunk.encode('utf-8', errors='ignore')
-            ids = [b + NUM_SPECIAL for b in raw]
-            # <unk> 兜底
-            ids = [i if i in self.vocab else UNK_ID for i in ids]
+        """文本 → token id 列表。按块编码: 合并永不跨块, 每块独立栈式合并。
 
-            # 栈: 压入后不断尝试合并栈顶两个（可连续合并）
+        v3 优化（encode pipeline 专项，train/merges/vocab 均未改）：
+        - 免中间 ids list（直接遍历 raw bytes）
+        - 局部变量绑定（merges.get / out.extend / vocab 等），减少属性查找
+        - 栈顶合并用 `stack[-2]=nid; del stack[-1]` 替代 pop×2+append
+        输出与旧实现逐 token 一致（tests/test_encode_equivalence.py 验证）。
+        """
+        out = []
+        out_ext = out.extend
+        mg_get = self.merges.get
+        vocab = self.vocab
+        NS = NUM_SPECIAL
+        UNK = UNK_ID
+        findall = PRETOK_RE.findall
+        for chunk in findall(text):
+            raw = chunk.encode('utf-8', errors='ignore')
             stack = []
-            for token in ids:
-                stack.append(token)
+            push = stack.append
+            for b in raw:
+                tid = b + NS
+                if tid not in vocab:      # <unk> 兜底（字节 token 超词表时）
+                    tid = UNK
+                push(tid)
+                # 栈顶尝试连续合并
                 while len(stack) >= 2:
-                    nid = self.merges.get((stack[-2], stack[-1]))
+                    nid = mg_get((stack[-2], stack[-1]))
                     if nid is None:
                         break
-                    stack.pop()
-                    stack.pop()
-                    stack.append(nid)
-            out.extend(stack)
+                    stack[-2] = nid
+                    del stack[-1]
+            out_ext(stack)
         return out
 
     def decode(self, ids: list[int]) -> str:

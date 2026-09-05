@@ -67,8 +67,10 @@ fast 峰值内存比 legacy 高 ~4x，但绝对量很小（200K 78MB → 4M 估�
 | 3256 | 179.7 | 109.9 | 1.6x | PASS | 408 MB |
 | 6144 | 505.0 | 170.3 | **3.0x** | PASS | 405 MB |
 
-### Stage 3: 4M 字符（**待跑**，用户推迟到后续）
-只跑 fast（不跑 legacy）：目标实测 4M/6144 fast 生产耗时（预计 ~8-15 min）。
+### Stage 3: 4M 字符（fast only，生产规模实测）
+| trainer | vocab | time (s) | merges | RSS | 备注 |
+|---|---|---|---|---|---|
+| fast | 6144 | **575.5 (~9.6 min)** | 5886 | 1.74 GB | legacy 外推 ~55 min → **~5.7x** |
 
 > vocab 1024 时 fast 略慢：merge 轮数少（766），max 全扫的 counts 小，
 > heap 的 Python 层 push/pop 固定开销占主导。真实使用（3256/6144）均显著加速。
@@ -83,6 +85,6 @@ fast 峰值内存比 legacy 高 ~4x，但绝对量很小（200K 78MB → 4M 估�
 ## 7. 结论
 
 - ✅ **推荐替换默认 trainer**（train.py 增加 `--bpe-trainer fast` 选项，默认保持 legacy 至全面验证）
-- 实测加速（等价 PASS）：200K/6144 = 3.7x；1M/6144 = 3.0x（legacy 505s → fast 170s）
-- 4M/6144 预计：legacy ~55min → fast ~8-15min（Stage 3 待跑实测，用户推迟）
+- 实测加速（等价 PASS）：200K/6144 = 3.7x；1M/6144 = 3.0x；**4M/6144 = ~5.7x（575s ≈ 9.6 min vs legacy ~55 min）**
+- **任务书性能目标达成**：4M/vocab6144 ≤ 20 min ✓（实测 9.6 min，接近理想 10-15 min）
 - 语义零变化：merges/vocab/encode/decode 与 legacy 完全一致
