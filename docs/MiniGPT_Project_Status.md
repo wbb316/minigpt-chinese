@@ -11,7 +11,7 @@
 
 ## 当前阶段
 
-- [x] **v3 50M 完成**（2026-09-06，`v3_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.6154** @ step 30454（webnovel_v2 评估空间新 best，详见 EXPERIMENT_LOG）
+- [x] **v2 50M 完成**（2026-09-06，`v2_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.6154** @ step 30454（webnovel_v2 评估空间新 best，详见 EXPERIMENT_LOG）
 - [x] **★ 首个严格可比参数对照成立**：50M@1B(**3.6154**) < 35M@1B(3.7076) < 35M@2B(3.6372) → **参数 scaling 收益 > 重复数据收益**（同 tokenizer/语料/val/batch/LR，仅参数不同）
 - [x] **v2 35M 两轮训练完成**（2026-09-05→06，`v2_35M_ctx512_1B_E1+E2`）：35M / **2B token**（998M×2 同语料二遍）/ ctx512 / vocab6144，**v2 best = 35M v2 Epoch 2：val **3.6372** / train_eval **3.6063** / gap **0.0310** @ step 60915**（v2 evaluation space best，不与旧 20M raw loss 直接排名；详见 EXPERIMENT_LOG）
 - [x] Epoch 2 resume 修复完成并验证：`docs/RESUME_AUDIT.md`（next_epoch 语义 / `--lr-scheme const` 恒温 5e-5 / AMP 更新门控 / 精确 tokens_seen），云端与本地冒烟均通过
@@ -31,7 +31,7 @@
 - **Best val_loss (old eval): 3.636**（nats；旧评估空间：旧 tokenizer/语料/val 集/ctx256；本地归档: `result/20M参数+416Mtokens/checkpoint_best.pt`）
 - **Do not overwrite unless a new experiment improves it.**
 - v2 (35M, 2026-09-06, **Epoch 2**): val **3.6372** / train_eval **3.6063** / gap **0.0310**（**v2 评估空间 best**），**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result/35M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_webnovel_v2/`）
-- **v3 (50M, 2026-09-06): val 3.6154** / train_eval 3.5776 / gap 0.0378 —— **webnovel_v2 评估空间当前 best**（同空间与 35M 直接可比）；checkpoint: `result/50M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m/`）
+- **v2 (50M, 2026-09-06): val 3.6154** / train_eval 3.5776 / gap 0.0378 —— **webnovel_v2 评估空间当前 best**（同空间与 35M 直接可比）；checkpoint: `result/50M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m/`）
 
 > 最新 ≠ 最好：跑失败/半成品实验时，**不要覆盖 `checkpoint_best.pt`**，也不要以最新 checkpoint 当作最佳结论。
 
@@ -44,9 +44,9 @@
 | 20M 最终 | 20M | 10L/8H/384d/bs256/vocab6144/tie | v0+v1 (4.16亿 token) | 3.636 | ≈20393f0 |
 | v2 首跑 (Epoch 1) | 35M | 10L/8H/512d/bs512/vocab6144/tie（实际 batch64） | webnovel_v2 shard0 (9.98亿) | 3.7076 | 614d325 |
 | v2 Epoch 2 | 35M | 同 E1（const LR 5e-5 恒温续训） | webnovel_v2 shard0（第二遍，累计 19.96 亿） | 3.6372 | 16f0c1a |
-| v3 50M | 51.4M | 12L/9H/576d/bs512/vocab6144/tie | webnovel_v2 shard0 (9.98亿, 单轮) | **3.6154** | fffbffe |
+| v2 50M | 51.4M | 12L/9H/576d/bs512/vocab6144/tie | webnovel_v2 shard0 (9.98亿, 单轮) | **3.6154** | fffbffe |
 
-> v3 严格可比链（同评估空间）：50M@1B 3.6154 < 35M@2B 3.6372 < 35M@1B 3.7076 → **参数 scaling 收益 > 重复数据收益**（详见 EXPERIMENT_LOG 阶段记录）。
+> v2 严格可比链（同评估空间）：50M@1B 3.6154 < 35M@2B 3.6372 < 35M@1B 3.7076 → **参数 scaling 收益 > 重复数据收益**（详见 EXPERIMENT_LOG 阶段记录）。
 
 > 完整记录在 `docs/EXPERIMENT_LOG.md`；豆包复盘报告在 `docs/report_output/`。
 > 比较条件见「实验比较规则」一节（val loss 单位 nats）。

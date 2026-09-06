@@ -57,9 +57,9 @@
 - **resume 修复验证**：启动日志 "Epoch 1"（未重跑 epoch 0）；lr 全程 5.00e-5（无 4.35e-4 突跳）；checkpoint `next_epoch=2` / `tokens_seen=1,996,059,136` 自动记录
 - **备注**：同数据第二遍在恒温 5e-5 下仍显著改善（3.708→3.637），说明 E1 尾段未收敛完全（容量/步数尚有余量）；gap 微增提示再堆同数据收益递减——**下一步优先新数据（shard1/2）或更长训练**；与 20M 3.636 语料/tokenizer 不同**不可直接比**，数值几乎持平仅巧合。
 
-### v3_50M_ctx512_1B — 50M 参数 scaling（2026-09-06）
+### v2_50M_ctx512_1B — 50M 参数 scaling（2026-09-06）
 
-- **Experiment ID**：`v3_50M_ctx512_1B`
+- **Experiment ID**：`v2_50M_ctx512_1B`（v2 家族：与 35M 同 webnovel_v2 语料/tokenizer/评估空间）
 - **status**：`complete`（★ 本项目首个严格可比参数对照：同 tokenizer/语料/val 集/batch/LR 调度，仅参数量不同）
 - **date**：2026-09-06 ｜ **commit**：fffbffe（配置见 `docs/experiment_config_50M.yaml`）
 - **模型配置**：**12L/9H/576d**/bs512/vocab6144/tie/dropout0.1；parameters = **51,411,840**（用户选定方案 B；head_dim=64 惯例保持）
