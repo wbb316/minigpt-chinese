@@ -1,0 +1,80 @@
+# =====================================================================
+# experiment_config_50M.yaml — 50M 参数 scaling 实验配置（v3）
+# 创建：2026-09-06 ｜ 对应：B 组第二阶段单变量拆解第一炮
+# 实验 ID：v3_50M_ctx512_1B（与 v2_35M_ctx512_1B_E1 严格可比）
+# 说明：train.py 当前走命令行参数，本文件是“唯一事实来源”，
+#       开跑前按最下方等价命令逐项核对。val loss 单位 nats。
+# =====================================================================
+
+meta:
+  name: v3_50M_ctx512_1B      # 实验名（结果目录 / 日志标注用）
+  version: v3
+  date: 2026-09-06
+  params_est: "~51.4M"        # 精确 51,411,840（12L/576d/9H/6144/tie）
+  purpose: >
+    参数 scaling 对照：与 v2_35M_ctx512_1B_E1（34.7M, val 3.7076）比较——
+    **同 tokenizer / 同语料(shard0) / 同 val 集 / 同 batch64 / 同 lr 调度 / epochs=1**，
+    仅参数量不同（34.7M → 51.4M，+48%）。
+    同时首次验证「加深」方向（20M→35M 是加宽 384→512，10L 未变；本实验 12L）。
+    若 val 显著低于 3.7076 → 参数增益确认；尾部若仍快速下降 → 未饱和，可续 shard1。
+
+# ---------- 模型（= 用户选定方案 B） ----------
+model:
+  n_layer: 12                # 35M 的 10L → 12L（加深，新方向）
+  n_embd: 576                # 512 → 576（加宽）
+  n_head: 9                  # head_dim = 576/9 = 64（惯例保持）
+  block_size: 512            # 与 35M 相同（实验变量不动）
+  vocab_size: 6144           # 与 35M 相同（复用 shard0 训练的 tokenizer）
+  tie_embeddings: true
+  dropout: 0.1
+
+# ---------- 数据（与 35M E1 完全相同 → 缓存全命中） ----------
+data:
+  tokens: 1B                 # shard0，单 epoch ≈ 9.98 亿（与 35M E1 完全一致）
+  mode: pack
+  version: webnovel_v2       # shard0（train_webnovel_v2.txt）
+  train_txt: data/train_webnovel_v2.txt
+  val_txt: data/val_webnovel_v2.txt
+  cache_dir: /root/autodl-tmp/data   # 云端：uint16 shards 缓存已在（828 片）
+  tokens_sample: 4000000     # tokenizer 采样（缓存命中，不重训）
+
+# ---------- 训练（全部与 35M E1 相同，保证可比） ----------
+training:
+  batch_size: 64             # 与 35M E1 相同！对照实验禁止动 batch
+                             # 若 4090 24GB OOM（预估 ~20GB，风险中）：先冒烟确认；
+                             # 必须降时只能降到 48/32 并如实记录对照带 batch 变量
+  lr: 8e-4                   # 峰值学习率（同 35M）
+  min_lr: 5e-5               # ratio 0.0625（同 35M）
+  warmup: 1000               # 同 35M
+  epochs: 1                  # 单 epoch = 1B token（严格 1:20 口径；跑完看尾部是否饱和）
+  weight_decay: 0.05
+  grad_clip: 1.0
+  val_every: 5000
+  patience: 2
+  eval_batches: 100
+
+# ---------- 运行时 ----------
+runtime:
+  out_dir: /root/result_50m   # 新目录；启动脚本须先 cp tokenizer pkl 进来（避免重训 ~30min）
+  log_dir: /root/log
+  device: cuda                # 云端 4090
+  amp: true
+  encode_workers: 16
+  num_workers: 8
+
+# =====================================================================
+# 等价训练命令（开跑前按本文件逐项核对；tokenizer 缓存需先 cp）
+# =====================================================================
+# mkdir -p /root/result_50m
+# cp /root/result_webnovel_v2/tokenizer_v6144_s4000000.pkl /root/result_50m/
+# python -u train/train.py \
+#   --train-txt /root/autodl-tmp/data/train_webnovel_v2.txt \
+#   --val-txt /root/autodl-tmp/data/val_webnovel_v2.txt \
+#   --sample-mode pack --batch-size 64 --block-size 512 \
+#   --n-layer 12 --n-head 9 --n-embd 576 \
+#   --vocab-size 6144 --tie-embeddings --tokens-sample 4000000 \
+#   --bpe-trainer fast --cache-format shards \
+#   --lr 8e-4 --min-lr-ratio 0.0625 --warmup-steps 1000 --weight-decay 0.05 \
+#   --epochs 1 --val-every 5000 --patience 2 --eval-batches 100 \
+#   --encode-workers 16 --lr-scheme cosine \
+#   --out-dir /root/result_50m --cache-dir /root/autodl-tmp/data --log-dir /root/log
