@@ -49,8 +49,10 @@ def load_model(ckpt_path, tok_path, n_head=8):
     return gpt, tokenizer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_CKPT = os.path.join(ROOT, 'result', 'checkpoint_best.pt')
-DEFAULT_TOK = os.path.join(ROOT, 'result', 'tokenizer_best.pkl')
+# 默认模型 = v2 35M（webnovel_v2 语料，2B token，val 3.6372）
+# 归档位置见 result/ 总文件夹结构（docs/MiniGPT_Project_Status.md）
+DEFAULT_CKPT = os.path.join(ROOT, 'result', '35M参数+998Mtokens', 'checkpoint_best.pt')
+DEFAULT_TOK = os.path.join(ROOT, 'result', '35M参数+998Mtokens', 'tokenizer_best.pkl')
 
 # FastAPI 应用
 app = FastAPI()

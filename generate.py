@@ -30,9 +30,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # ---------------------------------------------------------------- 模型加载
-def load_model(ckpt_path='result/checkpoint_best.pt',
-               tok_path='result/tokenizer_best.pkl', n_head=8):
-    """加载模型，架构从 state_dict 自动推断（头数默认 8，可用 --n-head 覆盖）。"""
+def load_model(ckpt_path='result/35M参数+998Mtokens/checkpoint_best.pt',
+               tok_path='result/35M参数+998Mtokens/tokenizer_best.pkl', n_head=8):
+    """加载模型，架构从 state_dict 自动推断（头数默认 8，可用 --n-head 覆盖）。
+
+    默认加载 v2 35M（webnovel_v2 语料，2B token，val 3.6372）；其它模型传 --ckpt。
+    """
     ckpt = ckpt_path if os.path.isabs(ckpt_path) else os.path.join(ROOT, ckpt_path)
     tok = tok_path if os.path.isabs(tok_path) else os.path.join(ROOT, tok_path)
 
@@ -169,8 +172,10 @@ def main():
                         help='nucleus 采样阈值（1.0 = 不截断）')
     parser.add_argument('--repetition-penalty', type=float, default=1.0,
                         help='重复惩罚（1.0 = 不惩罚；1.1~1.2 抑制复读）')
-    parser.add_argument('--ckpt', default='result/checkpoint_best.pt', help='模型权重路径')
-    parser.add_argument('--tokenizer', default='result/tokenizer_best.pkl', help='分词器 pkl 路径')
+    parser.add_argument('--ckpt', default='result/35M参数+998Mtokens/checkpoint_best.pt',
+                        help='模型权重路径')
+    parser.add_argument('--tokenizer', default='result/35M参数+998Mtokens/tokenizer_best.pkl',
+                        help='分词器 pkl 路径')
     args = parser.parse_args()
 
     gpt, tokenizer = load_model(ckpt_path=args.ckpt, tok_path=args.tokenizer,

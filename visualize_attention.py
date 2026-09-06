@@ -140,13 +140,13 @@ def plot_heatmap(attn, token_labels, layer, head, save_path):
 def main():
     parser = argparse.ArgumentParser(description='可视化 GPT 注意力热力图')
     parser.add_argument('--text', default='我喜欢她，她也喜欢我', help='输入的中文提示')
-    parser.add_argument('--layer', type=int, default=3, help='要可视化的层 (0~6)')
+    parser.add_argument('--layer', type=int, default=3, help='要可视化的层 (0~n_layer-1, v2 为 10 层)')
     parser.add_argument('--head', type=int, default=0, help='要可视化的头')
     parser.add_argument('--n-head', type=int, default=8,
                         help='模型注意力头数 (权重中无法推断, 训练时为 8)')
-    parser.add_argument('--ckpt', default='result/checkpoint_best.pt')
-    parser.add_argument('--tokenizer', default='result/tokenizer_best.pkl')
-    parser.add_argument('--out-dir', default='result')
+    parser.add_argument('--ckpt', default='result/35M参数+998Mtokens/checkpoint_best.pt')
+    parser.add_argument('--tokenizer', default='result/35M参数+998Mtokens/tokenizer_best.pkl')
+    parser.add_argument('--out-dir', default='result/35M参数+998Mtokens')
     args = parser.parse_args()
 
     setup_chinese_font()
