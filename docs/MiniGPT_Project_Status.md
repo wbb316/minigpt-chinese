@@ -11,18 +11,24 @@
 
 ## 当前阶段
 
-- [x] **v2 首跑完成**（2026-09-05）：35M / 998M token / ctx512 / vocab6144，best val **3.708**（详见 EXPERIMENT_LOG；**未破 20M 纪录且 tokenizer/语料不同，不可直接比**）
+- [x] **v2 35M 两轮训练完成**（2026-09-05→06，`v2_35M_ctx512_1B_E1+E2`）：35M / **2B token**（998M×2 同语料二遍）/ ctx512 / vocab6144，best val **3.6372** @ step 60915，gap 0.031（详见 EXPERIMENT_LOG）
+- [x] Epoch 2 resume 修复完成并验证：`docs/RESUME_AUDIT.md`（next_epoch 语义 / `--lr-scheme const` 恒温 5e-5 / AMP 更新门控 / 精确 tokens_seen），云端与本地冒烟均通过
 - [x] 语料下载完成：`D:\小说\webnovel\webnovel_{0,1,2}.jsonl` 各 ~3.9GB（合计 11.7GB，~148 万行 / ~2790 本，均已验证无 JSON 错误）
 - [x] 清洗完成：shard0 → `data/train|val_webnovel_v2.txt`（云端 `/root/autodl-tmp/data/`，train 12.4 亿字符 / val 1.44 亿字符）
-- [x] v2 实验配置已跑（**已训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— 实际 batch 因 4090 OOM 从 128 降为 64（总 token 不变）
-- [ ] 训练目标未达成：v2 val 3.708 **未低于** 3.636（20M 版纪录）——但两者 tokenizer/语料不同，**不属于可比实验**，不能下"35M 不如 20M"结论
+- [x] v2 实验配置已跑（**已训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— 首次配置 batch128，随后实际成功运行配置调整为 batch64（总 token 不变）
+- [ ] 下一目标：**新数据**（webnovel shard1/2，~2B 新 token）或确认 35M 容量上限（同数据二遍 gap 微增、收益递减）——v2 E2 val 3.6372 与 20M 3.636 数值持平但**不可直接比**（不同 tokenizer/语料/val 集）
+
+> **分别记录、不要混排**：
+> - Historical best on old evaluation：20M val = 3.636（旧 tokenizer/语料/val 集/ctx256）
+> - Current v2 best：35M Epoch 2 val = **3.6372**（新 tokenizer/语料/val 集/ctx512，2B token）
+> 两者处于不同评估空间，**不构成同一排行榜**。
 
 ## Current Best Checkpoint
 
-- **Best known model: 20M_final**（10L/8H/384d/bs256/vocab6144/tie）
-- **Best val_loss: 3.636**（nats；checkpoint: `result_20m_all/checkpoint_best.pt`）
+- **Best known model (old eval): 20M_final**（10L/8H/384d/bs256/vocab6144/tie）
+- **Best val_loss (old eval): 3.636**（nats；旧评估空间：旧 tokenizer/语料/val 集/ctx256；本地归档: `result/20M参数+416Mtokens/checkpoint_best.pt`）
 - **Do not overwrite unless a new experiment improves it.**
-- v2 (35M, 2026-09-05): val 3.708，**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result_webnovel_v2/checkpoint_best.pt`
+- v2 (35M, 2026-09-06, **Epoch 2**): val **3.6372**（v2 评估空间 best），**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result/35M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_webnovel_v2/`）
 
 > 最新 ≠ 最好：跑失败/半成品实验时，**不要覆盖 `checkpoint_best.pt`**，也不要以最新 checkpoint 当作最佳结论。
 
@@ -33,7 +39,10 @@
 | 百合基线 | 7.2M | 7L/8H/256d/bs128/vocab3256 | 百合 35 本 | 3.79 | ≈85460d5 |
 | LN 修复 | 6.3M | 6L/8H/256d/bs256/vocab6144/tie | 轻小说 v0 | 4.188 | ≈7a4bf61 |
 | 20M 最终 | 20M | 10L/8H/384d/bs256/vocab6144/tie | v0+v1 (4.16亿 token) | 3.636 | ≈20393f0 |
-| v2 首跑 | 35M | 10L/8H/512d/bs512/vocab6144/tie | webnovel_v2 shard0 (9.98亿) | 3.708 | 614d325 |
+| v2 首跑 (Epoch 1) | 35M | 10L/8H/512d/bs512/vocab6144/tie（实际 batch64） | webnovel_v2 shard0 (9.98亿) | 3.7076 | 614d325 |
+| v2 Epoch 2 | 35M | 同 E1（const LR 5e-5 恒温续训） | webnovel_v2 shard0（第二遍，累计 19.96 亿） | **3.6372** | 16f0c1a |
+
+> v2 两轮：`v2_35M_ctx512_1B_E1`（3.7076）+ E2（3.6372）；3.6372 为 v2 评估空间当前 best（详见 EXPERIMENT_LOG 阶段记录）。
 
 > 完整记录在 `docs/EXPERIMENT_LOG.md`；豆包复盘报告在 `docs/report_output/`。
 > 比较条件见「实验比较规则」一节（val loss 单位 nats）。
@@ -51,7 +60,7 @@
 
 ## 当前未知问题
 
-- v2（3.708）数值上未破 20M 纪录（3.636），但 **tokenizer/语料不同不可直接比**；同 tokenizer + 同 val 集下的 35M vs 20M 增益仍无可比数据
+- v2 E1（3.7076）数值上未破 20M 纪录（3.636），但 **tokenizer/语料不同不可直接比**；同 tokenizer + 同 val 集下的 35M vs 20M 增益仍无可比数据
 - 20M 模型继续堆数据（4.16亿 → 10 亿 token）是否继续降 loss 未验证
 - block 512 相对 256 的长程收益未在同一语料上验证
 - 更大模型（50M）相对 35M/20M 的增益未验证
@@ -60,7 +69,8 @@
 ## 下一阶段计划
 
 1. 恢复 B 组：数据扩到 ~1B token（webnovel_v2，先 1 分片）+ 模型 20M → 35M/50M + 上下文 512
-2. v2 首跑验证（配置见 `docs/experiment_config_v2.yaml`），目标 val < 3.636
+2. v2 首跑（Epoch 1）已完成（配置见 `docs/experiment_config_v2.yaml`，best val 3.7076）
+3. **Epoch 2（待训练诊断后决定）**：先修 scheduler warning（optimizer.step / lr_scheduler.step 顺序）、核对 resume 后 LR 锚定与 checkpoint 状态，再决定是否继续训练；目标先观察第二轮改善幅度与 gap 走势
 
 ### Scaling 原则（两阶段）
 

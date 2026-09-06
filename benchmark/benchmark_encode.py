@@ -24,7 +24,7 @@ from data.token_cache import encode_to_cache, ShardMemmap  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL = os.path.join(ROOT, 'data', 'train_webnovel_v2.txt')
-TOK = os.path.join(ROOT, 'result_20m_all', 'tokenizer_best.pkl')
+TOK = os.path.join(ROOT, 'result', '20M参数+416Mtokens', 'tokenizer_best.pkl')
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'bench_encode_tmp')
 
