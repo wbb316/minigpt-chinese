@@ -12,7 +12,6 @@ import csv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -83,7 +82,6 @@ ax.set_title("Figure 1 · Validation loss trajectory during Epoch 1 initializati
 ax2 = ax.twiny()
 ax2.set_xlim(ax.get_xlim())
 def step_to_tok(x): return x * 32768
-def tok_to_step(t): return t / 32768
 ax2.set_xlim(ax.get_xlim())
 ticks_step = [0, 15232, 30463, 45695, 60915]
 ax2.set_xticks(ticks_step)
