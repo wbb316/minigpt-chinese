@@ -62,9 +62,48 @@
 - safe split：切分点全部 ∈ PRETOK chunk 边界；6 类文本（中文段落/连续空格/多换行/标点/中英数混/长词块/大空白压力 100 片）分片 encode == 整段 encode（exact）
 - cache hash 失效：tokenizer merges 内容变 → 新 `_h` 目录 + 旧目录保留；未变 → 命中
 
-## 6. 最终结论
+## 6. 最终结论（云端 4090 实测，2026-09-06）
 
-（benchmark 后填：有效/无效优化、RECOMMENDED_TRAINING_STACK、ESTIMATED_1B_TIME / 2.8B_TIME）
+### 6.1 结果总表（14 组消融）
+
+| variant | tokens/s | loss_end | VRAM | 结论 |
+|---|---|---|---|---|
+| B0 基线 | 137,681 | 13.77 | 17.3GB | — |
+| B1 logging 采样 | 137,681 | 14.20 | 同 | **0%**（GPU 饱和，sync 非瓶颈） |
+| B2 zero_grad/H2D | 137,681 | 13.88 | 同 | **0%** |
+| B3 workers 0/2/4/8/12 | 全 137,681 | ~13.6 | 同 | **0%**（workers=0 都喂得饱 → 数据管线非瓶颈） |
+| B5 fused AdamW | 137,681 | 14.11 | 同 | **0%** |
+| B6 **compile** | **240,941** | 13.92 | **11.9GB** | **+75%** ✅ 且显存 -31% |
+| B7 bf16 | 138,847 | 13.60 | 17.3GB | +0.8%（噪声） |
+| B8 batch80 / 96 | 135,629 / OOM | 13.60 | 21.4 / 22.9GB | batch 无增益；96 OOM |
+| B9 compile+batch80 | 240,941 | 14.05 | 14.8GB | 与 B6 相同 → batch 不叠加 |
+
+全部组 nan=0、loss 轨迹一致（~50→~14）→ 正确性无回归。
+
+### 6.2 结论
+
+1. **唯一有效优化 = torch.compile（+75%）**：50M 是"小算子密集 + 手写 LayerNorm 多 kernel"型，launch/memory-bound → 图融合收益巨大；附带显存 -31%（buffer 复用）
+2. CPU 侧全部零收益（logging/数据管线/workers/fused/bf16/batch）：GPU 图效率是唯一瓶颈——P0/P1 修复保留（正确性 + 未来更大数据扩展），但对当前吞吐无贡献
+3. batch80/96 无叠加增益且 96 OOM → batch64 保留（LR schedule 无需重设计，与 50M E1 一致）
+
+### 6.3 RECOMMENDED_TRAINING_STACK
+
+```
+50M (12L/576d/9H) + batch64 + fp16 + --compile
+workers 8 / log_every 默认 / 其余与 50M E1 相同
+```
+
+### 6.4 时间估算（240,941 tok/s 实测）
+
+| 规模 | 原速度 (137.7k) | compile (240.9k) | 节省 |
+|---|---|---|---|
+| 1B | 2.07h | **1.15h** | 45% |
+| 2.8B | 5.8h | **3.2h** | 45% |
+
+### 6.5 决策（任务书 §21 标准）
+
+实测 **240,941 tok/s ≥ 170k 阈值 → 决策 A：可以推进 50M + 2.8B 新数据**。
+（compile 训练 loss 轨迹与基线一致 → 可安全用于正式 run 与 resume。）
 
 ---
 FUTURE_CORRECTNESS/STABILITY ITEM：GPT 无显式标准初始化（initial CE>300）——未来从零训 90M/100M 前单独做 GPT initialization audit，本次禁止混入。

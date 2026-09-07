@@ -1,0 +1,15 @@
+variant,commit,model_params,batch_size,block_size,precision,optimizer,fused,compile,num_workers,log_every,warmup_steps_measured,measured_steps,elapsed_seconds,step_per_sec,tokens_per_sec,peak_vram_mb,gpu_util_avg,gpu_util_p50,gpu_util_p90,gpu_power_avg,cpu_util_avg,ram_peak_mb,loss_start,loss_end,nan_count,amp_skipped,notes
+B0_current_baseline,NA,51411840,64,512,fp16,AdamW,0,0,8,50,400,500,254.4,4.202,137681.0,17263,83.8,99.0,100.0,293.3,NA,NA,50.2305,13.774,0,2,"P0 fixes included, logging every-step-equivalent(default 20)"
+B1_logging_reduced,NA,51411840,64,512,fp16,AdamW,0,0,8,50,400,500,254.3,4.202,137681.0,17263,83.8,100.0,100.0,296.0,NA,NA,49.8583,14.202,0,2,log_every=50 采样（每步 item 消除）
+B2_zerograd_h2d,NA,51411840,64,512,fp16,AdamW,0,0,8,50,400,500,254.2,4.202,137681.0,17263,84.0,99.0,100.0,295.7,NA,NA,50.0069,13.877,0,2,B1 + zero_grad set_to_none + non_blocking(已在代码，代码级)
+B3_dl_w0,NA,51411840,64,512,fp16,AdamW,0,0,0,50,400,500,254.3,4.202,137681.0,17263,83.8,99.0,100.0,296.1,NA,NA,51.5171,13.648,0,2,dataloader workers=0
+B3_dl_w2,NA,51411840,64,512,fp16,AdamW,0,0,2,50,400,500,254.7,4.202,137681.0,17263,83.9,99.0,100.0,295.9,NA,NA,51.2367,13.958,0,2,dataloader workers=2
+B3_dl_w4,NA,51411840,64,512,fp16,AdamW,0,0,4,50,400,500,254.6,4.202,137681.0,17263,83.6,99.0,100.0,295.8,NA,NA,50.8418,13.808,0,2,dataloader workers=4
+B3_dl_w8,NA,51411840,64,512,fp16,AdamW,0,0,8,50,400,500,254.2,4.202,137681.0,17263,84.2,99.0,100.0,296.0,NA,NA,50.215,13.84,0,2,dataloader workers=8
+B3_dl_w12,NA,51411840,64,512,fp16,AdamW,0,0,12,50,400,500,254.0,4.202,137681.0,17263,84.3,99.0,100.0,297.0,NA,NA,51.1458,13.41,0,2,dataloader workers=12
+B5_fused_adamw,NA,51411840,64,512,fp16,AdamW,1,0,8,50,400,500,253.4,4.202,137681.0,17263,84.3,98.5,100.0,295.2,NA,NA,50.4442,14.114,0,2,best workers + fused AdamW
+B6_compile,NA,51411840,64,512,fp16,AdamW,0,1,8,50,400,500,186.6,7.353,240941.0,11935,65.5,98.0,100.0,284.7,NA,NA,49.4223,13.915,0,2,torch.compile（计时排除编译期）
+B7_bf16,NA,51411840,64,512,bf16,AdamW,0,0,8,50,400,500,251.9,4.237,138847.0,17263,84.5,100.0,100.0,296.6,NA,NA,49.6177,13.603,0,0,bf16 no scaler
+B8_batch80,NA,51411840,80,512,fp16,AdamW,0,0,8,50,400,500,310.8,3.311,135629.0,21431,87.4,100.0,100.0,306.8,NA,NA,51.9996,13.596,0,2,batch=80
+B8_batch96,NA,51411840,96,512,fp16,AdamW,0,0,8,50,900,0,78.4,NA,NA,22967,0.9,0.0,0.0,28.9,NA,NA,NA,NA,0,0,batch=96
+B9_compile_batch80,NA,51411840,80,512,fp16,AdamW,0,1,8,50,400,500,215.2,5.882,240941.0,14835,69.8,98.0,100.0,301.7,NA,NA,49.5975,14.053,0,2,compile + batch80 组合（最优栈候选）
