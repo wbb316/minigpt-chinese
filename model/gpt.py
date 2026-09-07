@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 from model.layers import LayerNorm, PositionalEncoding, FeedForward
@@ -30,6 +32,7 @@ class GPT(nn.Module):
         self.block_size = block_size
         self.vocab_size = vocab_size
         self.tie_embeddings = tie_embeddings
+        self.n_layer = n_layer
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
         self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
@@ -41,6 +44,26 @@ class GPT(nn.Module):
             # 保留 head.bias 不改动，checkpoint 结构（token_emb.weight/head.weight/head.bias）
             # 与不 tie 时一致，generate/visualize 等加载代码无需任何改动。
             self.head.weight = self.token_emb.weight
+        # ---- GPT-2 风格初始化（2026-09-06，FUTURE item 转正）----
+        # 修复：nn.Embedding 默认 N(0,1) + tie → head 共享 std=1 权重 →
+        # logits 尺度爆炸 → initial CE 300+（正确基线 ≈ ln(vocab)）。
+        # 标准做法：所有权重 N(0, 0.02)；残差分支按 1/sqrt(2*n_layer) 缩小。
+        # 已有 checkpoint 加载路径用 load_state_dict 覆盖本初始化 → 零影响。
+        self.apply(self._init_weights)
+        for blk in self.blocks:      # GPT-2 residual scaled init
+            nn.init.normal_(blk.attn.out_proj.weight, mean=0.0,
+                            std=0.02 / math.sqrt(2.0 * n_layer))
+            nn.init.normal_(blk.ff.fc2.weight, mean=0.0,
+                            std=0.02 / math.sqrt(2.0 * n_layer))
+
+    def _init_weights(self, module):
+        """GPT-2 风格权重初始化：Linear/Embedding → N(0, 0.02)，bias 置零。"""
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, x :torch.Tensor, past_kvs=None, return_kv=False):
         """GPT 前向（支持 KV cache 增量推理）。
