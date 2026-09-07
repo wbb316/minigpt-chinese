@@ -144,6 +144,19 @@ def main():
                              'const=恒 lr=max_lr×min_lr_ratio（--resume 续跑 Epoch2+ 用：'
                              '从上一轮尾 lr 继续，不重铺 cosine，杜绝 resume 首步 LR 突跳）')
     parser.add_argument('--grad-clip', type=float, default=1.0)
+    # 性能专项（TRAINING_PERFORMANCE_AUDIT）参数
+    parser.add_argument('--log-every', type=int, default=20,
+                        help='每多少成功训练步做一次 loss.item()/EMA/tqdm/step 记录'
+                             '（默认 20；减少 GPU→CPU 同步；1 = 旧行为每步记录）')
+    parser.add_argument('--precision', default='fp16', choices=['fp16', 'bf16'],
+                        help='训练精度：fp16=autocast+GradScaler（默认）；'
+                             'bf16=autocast bf16 无 scaler（4090 原生支持）')
+    parser.add_argument('--fused-adamw', action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help='用 fused AdamW（单核 kernel，需 CUDA；不可用时自动回退）')
+    parser.add_argument('--compile', action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help='torch.compile 模型（首次编译开销大；仅 CUDA；需先 benchmark 再默认）')
     # 验证 / 早停
     parser.add_argument('--val-every', type=int, default=5000,
                         help='每多少步验证一次（slide 模式抓 epoch 内最优点）；0 = 只在 epoch 末验证')
@@ -163,8 +176,12 @@ def main():
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_amp = torch.cuda.is_available()
-    print(f'使用设备: {device}  (AMP: {use_amp})')
+    use_cuda = torch.cuda.is_available()
+    use_amp = use_cuda                                  # autocast 仅在 CUDA 启用
+    amp_dtype = torch.bfloat16 if args.precision == 'bf16' else torch.float16
+    use_scaler = use_cuda and args.precision == 'fp16'  # bf16 动态范围大，无需 GradScaler
+    print(f'使用设备: {device}  (AMP: {use_amp}, precision: {args.precision}, '
+          f'scaler: {use_scaler})')
 
     out_dir = resolve(args.out_dir)
     cache_dir = resolve(args.cache_dir)
@@ -273,8 +290,25 @@ def main():
     print(f'GPT 参数量: {n_params:,}'
           + ('（含 tie_embeddings，已去重）' if args.tie_embeddings else ''))
 
-    optimizer = torch.optim.AdamW(dedupe_params(gpt), lr=args.lr,
-                                  weight_decay=args.weight_decay)
+    if args.compile:
+        if use_cuda:
+            print('🔧 torch.compile 编译中（首次调用开销不计入吞吐 benchmark）...')
+            gpt = torch.compile(gpt)
+        else:
+            print('⚠️ --compile 仅 CUDA 可用，已忽略（当前 CPU）')
+
+    # ---------- optimizer（fused AdamW 可选，自动回退） ----------
+    opt_kwargs = dict(lr=args.lr, weight_decay=args.weight_decay)
+    if args.fused_adamw:
+        try:
+            optimizer = torch.optim.AdamW(dedupe_params(gpt), fused=True,
+                                          **opt_kwargs)
+            print('optimizer: AdamW(fused=True)')
+        except (TypeError, RuntimeError) as e:
+            print(f'⚠️ fused AdamW 不可用（{e}）→ 回退普通 AdamW')
+            optimizer = torch.optim.AdamW(dedupe_params(gpt), **opt_kwargs)
+    else:
+        optimizer = torch.optim.AdamW(dedupe_params(gpt), **opt_kwargs)
 
     # ---------- LR 调度（cosine / const 恒温续训） ----------
     # cosine: warmup + cosine 衰减到 max_lr×min_ratio（默认路径，从头训练）
@@ -302,7 +336,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         print(f'LR 方案: cosine（warmup {warmup} 步 → '
               f'衰减到 {args.lr * min_ratio:.2e}）')
-    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    scaler = torch.amp.GradScaler('cuda') if use_scaler else None
 
     # ---------- 断点续训（加轮数: --resume <latest> --epochs 更大的总数） ----------
     # epoch 语义（见 docs/RESUME_AUDIT.md §1）：checkpoint 存 next_epoch =
@@ -363,6 +397,10 @@ def main():
         f'  tokens_per_step:  {args.batch_size * args.block_size:,}',
         f'  lr:               {args.lr}',
         f'  lr_scheme:        {args.lr_scheme}',
+        f'  precision:        {args.precision}',
+        f'  log_every:        {args.log_every}',
+        f'  fused_adamw:      {args.fused_adamw}',
+        f'  compile:          {args.compile}',
         f'  warmup_steps:     {args.warmup_steps}',
         f'  decay_steps:      {max(0, total_steps - args.warmup_steps)}',
         f'  total_steps:      {total_steps}',
@@ -391,7 +429,7 @@ def main():
         with torch.no_grad():
             for x, y in loader:
                 x, y = x.to(device), y.to(device)
-                with torch.autocast('cuda', enabled=use_amp):
+                with torch.autocast('cuda', dtype=amp_dtype, enabled=use_cuda):
                     logits = gpt(x)
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 total += loss.item()
@@ -549,13 +587,15 @@ def main():
         running, steps_here = 0.0, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}', unit='step', ncols=100)
         for x, y in pbar:
-            x, y = x.to(device), y.to(device)
-            with torch.autocast('cuda', enabled=use_amp):
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            # zero_grad 放 forward 前 + set_to_none（省 grad buffer 置零 kernel）
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast('cuda', dtype=amp_dtype, enabled=use_cuda):
                 logits = gpt(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
 
-            optimizer.zero_grad()
-            if use_amp:
+            if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)                       # 裁剪前先反缩放
             else:
@@ -567,7 +607,7 @@ def main():
             # AMP GradScaler 检测到 overflow 会跳过 optimizer.step →
             # 该步不算训练步：不步进 scheduler（否则触发 "scheduler.step before
             # optimizer.step" warning 且 LR 计数错位）、不累计进度。
-            if use_amp:
+            if scaler is not None:
                 cnt0 = _opt_step_count(optimizer)
                 scaler.step(optimizer)
                 scaler.update()
@@ -578,14 +618,18 @@ def main():
 
             if updated:
                 scheduler.step()
-                running += loss.item()
-                steps_here += 1
                 global_step += 1
                 tok_total += x.numel()       # 精确 token（尾批按实际 numel，§D）
-                ema = loss.item() if ema is None else 0.99 * ema + 0.01 * loss.item()
-                pbar.set_postfix(loss=f'{ema:.3f}',
-                                 lr=f'{scheduler.get_last_lr()[0]:.1e}')
-                append_step_row(ema)         # ★ 每步记一行 (tokens_seen/lr/...)
+                # ---- 采样记录（P1，--log-every）：每 N 步一次 loss.item()
+                #      GPU→CPU 同步 + EMA/tqdm/step 行；其余步零同步 ----
+                if global_step % args.log_every == 0:
+                    li = float(loss.item())
+                    ema = li if ema is None else 0.99 * ema + 0.01 * li
+                    running += li
+                    steps_here += 1
+                    pbar.set_postfix(loss=f'{ema:.3f}',
+                                     lr=f'{scheduler.get_last_lr()[0]:.1e}')
+                    append_step_row(ema)     # ★ step 行（采样步；tokens_seen/lr 真实）
             else:
                 amp_skip_steps += 1          # AMP overflow 跳过（不消耗进度）
 
@@ -599,8 +643,10 @@ def main():
         pbar.close()
 
         flush_step_rows()                              # epoch 末把缓冲落盘
-        tqdm.write(f'epoch {epoch} 平均 train loss: {running / max(steps_here, 1):.3f} '
-                   f'(EMA {ema:.3f}; AMP skipped {amp_skip_steps} 步) '
+        tqdm.write(f'epoch {epoch} 平均 train loss（每 {args.log_every} 步采样）: '
+                   f'{running / max(steps_here, 1):.3f} '
+                   f'(EMA {ema if ema is not None else float("nan"):.3f}; '
+                   f'AMP skipped {amp_skip_steps} 步) '
                    f'— 已完成 {global_step}/{total_steps} 步, '
                    f'tokens_seen={tok_total:,.0f}')
         # epoch 末总是验证一次（与步级验证同一步时自动去重），保证任何模式下都会保存 checkpoint

@@ -57,11 +57,10 @@ class TextDataset(Dataset):
 
     def __getitem__(self, idx: int):
         if self.memmap:
-            x = self._tokens[idx:idx + self.block_size]
-            y = self._tokens[idx + 1:idx + 1 + self.block_size]
-            # memmap 只读：显式拷贝转 long（.copy 后 from_numpy 无警告）
-            return (torch.from_numpy(np.array(x, copy=True)).long(),
-                    torch.from_numpy(np.array(y, copy=True)).long())
+            # 单次 slice 拿 block+1 个 token，x/y 共享同一份 copy+转换
+            seq = self._tokens[idx:idx + self.block_size + 1]
+            t = torch.from_numpy(np.array(seq, copy=True)).long()
+            return t[:-1], t[1:]
         x = self.tokens[idx:idx + self.block_size]
         y = self.tokens[idx + 1:idx + 1 + self.block_size]
         return x, y
@@ -81,11 +80,11 @@ class PackedDataset(Dataset):
         self.block_size = block_size
         self._offset = offset
         if self.memmap:
-            self._n = len(tokens) - offset
+            # 只保存引用与元数据，绝不在 init 里做任何全量 slice
+            # （旧版 arr = tokens[offset:offset+_n*block+1] 会触发 ShardMemmap
+            #   全库 828 片扫描拼接 ~1GB，且 arr 从未被使用 —— P0a 修复）
             self._tokens = tokens
-            arr = tokens[offset:offset + self._n * block_size + 1]
-            # 只取需要长度，验证够长
-            n = (self._n - 1) // block_size
+            n = (len(tokens) - offset - 1) // block_size
             if n <= 0:
                 raise ValueError(
                     f'语料太短: {len(tokens)} token，至少需要 '
@@ -108,9 +107,9 @@ class PackedDataset(Dataset):
 
     def __getitem__(self, idx: int):
         if self.memmap:
+            # x/y 单次读取（P0c）：一次 shard lookup + copy + uint16→long
             start = self._offset + idx * self.block_size
-            x = self._tokens[start:start + self.block_size]
-            y = self._tokens[start + 1:start + 1 + self.block_size]
-            return (torch.from_numpy(np.array(x, copy=True)).long(),
-                    torch.from_numpy(np.array(y, copy=True)).long())
+            seq = self._tokens[start:start + self.block_size + 1]
+            t = torch.from_numpy(np.array(seq, copy=True)).long()
+            return t[:-1], t[1:]
         return self.x[idx], self.y[idx]
