@@ -4,7 +4,8 @@ import torch.nn.functional as F
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
+    def __init__(self, dim: int, n_heads: int, dropout: float = 0.0,
+                 rope=None):
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
@@ -14,6 +15,18 @@ class MultiHeadAttention(nn.Module):
         self.v = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
         self.dropout = nn.Dropout(dropout)
+        # RoPE 旋转器（默认 None = sinusoidal 旧行为；rope 模式由 GPT 注入）
+        self.rope = rope
+
+    def _rope_qk(self, q, k, start=0):
+        """Q/K projection 之后、score 之前应用 RoPE（位置编码的唯一作用点）。
+
+        rope 为 None 时（默认 sinusoidal）原样返回 → 与旧实现完全一致。
+        start = q/k 各行对应的绝对位置起点（KV cache 增量时 = 缓存长度）。
+        """
+        if self.rope is not None:
+            return self.rope(q, k, start=start)
+        return q, k
 
     def forward(self, x, mask=None, past_kv=None, return_kv=False):
         """多头注意力（支持 KV cache 增量推理）。
@@ -38,6 +51,7 @@ class MultiHeadAttention(nn.Module):
             # ---------- SDPA 路径（训练/常规, 全因果） ----------
             k = self.k(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
             v = self.v(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            q, k = self._rope_qk(q, k, start=0)
             y = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.dropout.p if self.training else 0.0,
@@ -50,8 +64,11 @@ class MultiHeadAttention(nn.Module):
         # ---------- 手写路径（KV cache 增量 或 自定义 mask） ----------
         if past_kv is not None:
             k_prev, v_prev = past_kv
+            T_prev = k_prev.size(2)
             k_new = self.k(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
             v_new = self.v(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            # 新 token 的位置 = T_prev 起（历史 K 已按原位置旋转，直接拼接）
+            q, k_new = self._rope_qk(q, k_new, start=T_prev)
             k = torch.cat([k_prev, k_new], dim=2)   # (B, H, T_prev+T, head_dim)
             v = torch.cat([v_prev, v_new], dim=2)
             T_full = k.size(2)
@@ -62,6 +79,7 @@ class MultiHeadAttention(nn.Module):
         else:
             k = self.k(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
             v = self.v(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            q, k = self._rope_qk(q, k, start=0)
             T_full = T
             if mask is None:
                 mask = torch.tril(torch.ones(T, T, device=x.device)).bool()

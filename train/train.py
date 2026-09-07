@@ -127,6 +127,11 @@ def main():
     parser.add_argument('--block-size', type=int, default=256,
                         help='上下文长度；6.4M 模型 128~256 合适，256 提升连贯性（手动注意力 O(T²)，勿再加大）')
     parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--position-encoding', default='sinusoidal',
+                        choices=['sinusoidal', 'rope'],
+                        help='位置编码：sinusoidal=绝对正弦（默认，旧行为不变）；'
+                             'rope=旋转位置编码（Q/K 在 attention 内旋转，'
+                             'embedding 不加位置向量）')
     parser.add_argument('--tie-embeddings', action=argparse.BooleanOptionalAction,
                         default=True,
                         help='输入/输出嵌入共享权重（大词表必备，防嵌入层吃掉过多参数；--no-tie-embeddings 关闭）')
@@ -173,7 +178,20 @@ def main():
     parser.add_argument('--resume', default='',
                         help='从 checkpoint_latest.pt 续训（加轮数用）。'
                              '例: --resume result_ln/checkpoint_latest.pt --epochs 20')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='固定随机种子（torch/numpy/random；用于对照实验保证'
+                             '数据流一致）。默认 None = 不固定（原行为）')
     args = parser.parse_args()
+
+    if args.seed is not None:
+        import random as _random
+        import numpy as _np
+        _random.seed(args.seed)
+        _np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        print(f'随机种子已固定: {args.seed}')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     use_cuda = torch.cuda.is_available()
@@ -284,9 +302,11 @@ def main():
     # ---------- 模型 ----------
     gpt = GPT(vocab_size=vocab_size, block_size=args.block_size, n_layer=args.n_layer,
               n_head=args.n_head, n_embd=args.n_embd, dropout=args.dropout,
-              tie_embeddings=args.tie_embeddings)
+              tie_embeddings=args.tie_embeddings,
+              position_encoding=args.position_encoding)
     gpt = gpt.to(device)
     n_params = gpt.get_num_params()
+    print(f'位置编码: {args.position_encoding}')
     print(f'GPT 参数量: {n_params:,}'
           + ('（含 tie_embeddings，已去重）' if args.tie_embeddings else ''))
 
@@ -379,6 +399,7 @@ def main():
         f'dataset_tag:        {dataset_tag}',
         'model:',
         f'  n_layer:          {args.n_layer}',
+        f'  position_enc:     {args.position_encoding}',
         f'  n_head:           {args.n_head}',
         f'  n_embd:           {args.n_embd}',
         f'  block_size:       {args.block_size}',

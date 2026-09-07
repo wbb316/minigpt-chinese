@@ -6,12 +6,13 @@ from model.layers import LayerNorm, PositionalEncoding, FeedForward
 from model.attention import MultiHeadAttention
 
 class Block(nn.Module):
-    def __init__(self,dim,n_head,dropout=0.0):
+    def __init__(self, dim, n_head, dropout=0.0, rope=None):
         super().__init__()
         self.ln1 = LayerNorm(dim)
-        self.attn= MultiHeadAttention(dim,n_head,dropout=dropout)   # ★ 传 dropout
+        self.attn = MultiHeadAttention(dim, n_head, dropout=dropout,
+                                       rope=rope)   # ★ 传 dropout / rope
         self.ln2 = LayerNorm(dim)
-        self.ff= FeedForward(dim, dropout=dropout)                  # ★ FFN 也加 dropout
+        self.ff = FeedForward(dim, dropout=dropout)                  # ★ FFN 也加 dropout
 
     def forward(self, x :torch.Tensor, past_kv=None, return_kv=False):
         """past_kv: 该层缓存的 (k, v)；return_kv=True 或给了 past_kv 时返回 (x, 新kv)。"""
@@ -26,19 +27,32 @@ class Block(nn.Module):
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, n_layer: int, n_head: int,
-                   n_embd: int, block_size: int, dropout: float = 0.0,
-                   tie_embeddings: bool = False):
+                 n_embd: int, block_size: int, dropout: float = 0.0,
+                 tie_embeddings: bool = False,
+                 position_encoding: str = 'sinusoidal'):
         super().__init__()
         self.block_size = block_size
         self.vocab_size = vocab_size
         self.tie_embeddings = tie_embeddings
         self.n_layer = n_layer
+        assert position_encoding in ('sinusoidal', 'rope'), \
+            f'position_encoding 仅支持 sinusoidal|rope，得到 {position_encoding}'
+        self.position_encoding = position_encoding
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
         self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
-        self.blocks=nn.ModuleList([Block(n_embd,n_head,dropout=dropout) for _ in range(n_layer)])   # ★ 传 dropout
-        self.ln=LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
-        self.head=nn.Linear(n_embd,vocab_size)
+        # RoPE：sinusoidal 模式 rope=None（旧行为不变）；rope 模式建旋转器（共享各层）
+        rope = None
+        if position_encoding == 'rope':
+            from model.rope import RotaryEmbedding  # noqa: E402
+            rope = RotaryEmbedding(dim=n_embd // n_head,
+                                   max_seq_len=block_size)
+            self.rope = rope
+        self.blocks = nn.ModuleList(
+            [Block(n_embd, n_head, dropout=dropout, rope=rope)
+             for _ in range(n_layer)])   # ★ 传 dropout
+        self.ln = LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
+        self.head = nn.Linear(n_embd, vocab_size)
         if tie_embeddings:
             # 输入/输出嵌入共享权重（省掉 head 的 833K 参数）。
             # 保留 head.bias 不改动，checkpoint 结构（token_emb.weight/head.weight/head.bias）
@@ -77,12 +91,14 @@ class GPT(nn.Module):
         B,T=x.shape
         assert T<=self.block_size
         x = self.token_emb(x)
-        if past_kvs is not None:
-            # 新 token 的真实全局位置 = 缓存的历史长度
-            start = past_kvs[0][0].size(2)
-            x = self.pos_emb(x, start=start)
-        else:
-            x = self.pos_emb(x)
+        if self.position_encoding == 'sinusoidal':
+            if past_kvs is not None:
+                # 新 token 的真实全局位置 = 缓存的历史长度
+                start = past_kvs[0][0].size(2)
+                x = self.pos_emb(x, start=start)
+            else:
+                x = self.pos_emb(x)
+        # rope 模式：不在 embedding 加位置向量（RoPE 在 attention 内旋转 Q/K）
         x = self.drop(x)   # ★ embedding dropout（token+pos 求和后）
 
         new_kvs = []
