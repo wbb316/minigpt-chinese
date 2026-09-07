@@ -45,3 +45,6 @@ scratch/*-ubyte
 .web_readme.md
 log/
 scratch/data/
+
+# ---- model 备份（动手前快照，不入库）----
+model_backup*/

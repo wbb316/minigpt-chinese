@@ -84,6 +84,12 @@ VARIANTS = {
                        workers=8, log_every=50, notes='batch=80'),
     'B8_batch96': dict(batch=96, precision='fp16', fused=False, compile=False,
                        workers=8, log_every=50, notes='batch=96'),
+    'B9_compile_batch80': dict(batch=80, precision='fp16', fused=False,
+                               compile=True, workers=8, log_every=50,
+                               notes='compile + batch80 组合（最优栈候选）'),
+    'B9_compile_batch64_rep': dict(batch=64, precision='fp16', fused=False,
+                                   compile=True, workers=8, log_every=50,
+                                   notes='compile+batch64 复现（验证 B6 稳定）'),
 }
 
 
