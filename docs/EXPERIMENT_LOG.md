@@ -30,6 +30,28 @@
 | 2026-09-05 | 614d325 | 10L/8H/512d/**实际 batch64**/vocab6144/tie | webnovel_v2 (shard0) | 9.98 亿 (tokens_seen 998,211,584) | 1:28:49 | 3.7076 | **v2_35M_ctx512_1B_E1 · Epoch 1 complete / Epoch 2 pending**；best step 30463 / gap 0.0289；7 次验证全刷 best；scheduler warning 待修（§详见下方 E1 阶段记录） |
 | 2026-09-06 | 16f0c1a | 10L/8H/512d/bs512/vocab6144/tie (batch64) | webnovel_v2 shard0（同一份第二遍） | 累计 19.96 亿 (tokens_seen 1,996,059,136) | 12:18→13:49 (~1:30) | **3.6372** | **v2_35M_ctx512_1B_E2 · Epoch 2 complete**；const LR 5e-5 恒温续训 + resume 修复（§RESUME_AUDIT）；best step 60915 / gap 0.031；AMP skipped 11 步；与 20M 3.636 语料/tokenizer 不同不可直接比（数值几乎持平）（§详见下方 E2 阶段记录） |
 
+### v1 时代回顾：早期"过拟合"的真相与修复演进（2026-09-08 回填澄清）
+
+> 背景：复盘 v1（旧空间：百合 / 轻小说）时期"模型老是过拟合"的记忆。按 README「关键优化点」与上方历史记录表回填，实际演进分三步，**最早的"高 val"不是过拟合，而是验证集切分泄漏**——不是靠"上大参数 + 上大数据"救回来的。
+
+1. **7.2M 百合基线（≈2026-08-23，85460d5）：高 val 的真凶 = 评估泄漏，不是泛化问题**
+   - 现象：val loss ≈ **4.5**，当时观感像"过拟合 / 泛化差"
+   - 根因：验证集按 **token 顺序**切分 → val 可能包含训练**从未见过的整本书** → 评估天然偏高（数据泄漏，评估失真）
+   - 修复：验证集改**按文件（按书）90/10 划分** → 4.5 → **3.79**（README 关键优化点 1，本表 85460d5 行）
+   - 这一步**与参数/数据规模无关**——不是靠堆规模解决的
+
+2. **6.3M LN 修复版（≈2026-09-03，7a4bf61）**：修的是 **LayerNorm 实现**（无偏方差 + 无 eps → 标准实现），val 4.188；属实现 bug 修复，与过拟合无关
+
+3. **20M 最终版（≈2026-09-04，20393f0）：真正的"参数 + 数据双升" + 确立 gap 判据**
+   - 规模：6.3M（6L/256d）→ **20M（10L/384d）**；语料 轻小说 v0 → **v0+v1（4.16 亿 token）**
+   - 此时才引入**正确过拟合判据**：`train_eval`（eval 无 dropout）+ `gap = val − train_eval`
+   - 终点：val **3.636** / train_eval 3.616 / **gap 0.020 → 判定"未过拟合，可继续堆数据"**（本表 20393f0 行；Status「已验证结论」）
+   - 所以"堆参数 + 堆数据"确实发生了，但它是**继续压 loss 的手段**；**确认没过拟合靠的是 gap 判据**——堆规模本身不消除过拟合，是 4.16 亿 token 规模足够大 + 验证判据正确，才得到这个结论
+
+4. **对 v1 记忆的澄清**：若记忆里的"过拟合"指早期 val 明显偏高（~4.5）——那是**泄漏 bug**（按文件划分修复）；若指"小模型小数据怕过拟合"——后期以 20M + 4.16 亿 token + gap 判据确认未过拟合。两者都不是"过拟合已发生、靠堆规模救回来"的故事。
+
+5. **遗留到 v2 的连续性**：gap 判据沿用至今（35M E1 0.0289 / E2 0.031 / 50M 0.0378 均判"无过拟合"；50M gap 偏大是容量大、train_eval 压得更低的**预期伴随现象**，不是过拟合，见 `docs/report_output/v2_50M+1B/MiniGPT_v2_Scaling_Analysis.md` §4）。
+
 ### v2_35M_ctx512_1B_E1 — Epoch 1 阶段记录（2026-09-05）
 
 - **Experiment ID**：`v2_35M_ctx512_1B_E1`
@@ -88,3 +110,33 @@
 - **结论**：**RoPE 胜出**（val 好 ~1.0-2.1 nats；代价速度 -6.3%）；起点 loss 均正常（新 init 消灭 300+ 爆炸，7.9 vs 基线 8.72）
 - **决定**：默认 `position_encoding` 切 **rope**（GPT/train.py），sinusoidal 保留可切换（旧 checkpoint 推理自动检测）；旧 35M/50M（sinusoidal）结果不受影响
 - commit：89f11a8（实现）+ e4a9a16（默认切 rope）
+
+### v3_50M_ctx512_1B — 50M 新底层正式训练（RoPE + GPT-2 init，2026-09-08）
+
+- **Experiment ID**：`v3_50M_ctx512_1B`（**v3 命名 = 架构新底层代际**：GPT-2 init + RoPE；评估空间沿用 webnovel_v2/v6144/同 val 集 → **与 v2 系数字直接可比**）
+- **status**：`complete`（★ 同评估空间**新 best：3.2097**，打破 v2 50M 3.6154）
+- **date**：2026-09-08 ｜ **commit**：981d35f（rope 默认确定后；launcher `scratch/run_50m_rope_cloud.sh`）
+- **模型配置**：**12L/9H/576d**/bs512/vocab6144/tie/dropout0.1；parameters = **51,411,840**（与 v2 50M 完全同结构，纯底层替换）
+- **与 v2 50M 的差异（双变量，非单变量）**：① **GPT-2 init**（N(0,0.02)+residual 缩放，commit ac7928d）② **position_encoding=rope**（89f11a8/e4a9a16）；rope-vs-sinusoidal 单变量短训已独立证明 rope 赢 ~1.0-2.1 nats（见上节）
+- **训练配置**：batch=64；cosine（warmup 1000 → min 5e-5）；epochs=1；total_steps=30,455（自然结束）；**compile=True**
+- **train tokens**：997,945,856（≈1B，shard0 单轮；严格 1:20 口径）
+- **best val**：**3.2097** @ step 30,455（epoch 末；7 次验证全 best）
+- **train_eval / gap**：3.142 / +0.068
+- **训练时间**：16:54→18:08（~1:14，compile 加速后 ~7.2 step/s）｜ **AMP skipped**：8 步
+- **同点对比 v3 vs v2 50M**（同结构同数据同 batch/LR，底层升级，各 step val）：
+
+| step | v2 50M (sinusoidal+旧init) | v3 50M (rope+新init) | 差 |
+|---|---|---|---|
+| 5000 | 4.747 | **3.632** | −1.115 |
+| 10000 | 4.121 | **3.463** | −0.658 |
+| 15000 | 3.871 | **3.364** | −0.507 |
+| 20000 | 3.728 | **3.290** | −0.438 |
+| 25000 | 3.652 | **3.236** | −0.415 |
+| 30000 | 3.617 | **3.210** | −0.407 |
+| 30454/455 | 3.6154 | **3.2097** | −0.406 |
+
+- **核心结论（同一评估空间，直接可比）**：
+  - v3 50M **3.2097** < v2 50M **3.6154**（底层升级 → 好 **0.406 nats**，~11% 相对；rope 短训同点差与正式 run 尾段收敛吻合）
+  - 全梯度重排：**v3 50M 3.2097 < v2 50M 3.6154 < 35M E2 3.6372 < 35M E1 3.7076**
+  - gap 0.068 较 v2 50M 0.038 偏大：train_eval 压得更低（3.142 vs 3.578）是大容量+新底层拟合更紧的**预期伴随现象**；val 单调下降无拐点 → **无过拟合信号**（沿用 v2 scaling 分析 §4 趋势判据）
+- **备注**：compile 训练导致 checkpoint key 带 `_orig_mod.` 前缀 → 已修复（commit a31072b：A=推理工具自动剥离前缀，B=train.py 保存 raw_gpt 防复发）；产物归档 `log/50M参数_v3+998Mtokens/`（best/latest + tokenizer + run_config + step/val 历史）；生成经 `python generate.py --ckpt ... --n-head 9` 验证正常；**下一步主线 = v3 底层 + shard1/2 新数据**（参数已定型，数据侧真 scaling）。

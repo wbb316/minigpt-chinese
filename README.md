@@ -10,7 +10,7 @@
 - **自研 BPE 分词器**：字节级 BPE，正则预分词 + 链表增量合并，4M 字符训练分钟级；大语料并行编码（uint16 分片缓存 + memmap，3.6GB 文本 → 998M token 几分钟）
 - **从零实现 GPT**：LayerNorm / 正弦位置编码 / FeedForward / 多头因果注意力（SDPA + 手写双路径）/ 主模型拼装
 - **完整训练链路**：语料清洗 → BPE → 数据切片（pack 打包）→ 训练（warmup+cosine、AMP、梯度裁剪、step 级验证、早停、断点续训）→ Web 生成
-- **多代演进记录**：7.2M 百合单语料 → 6.3M LayerNorm 修复版 → 20M 双语料 → **v2 35M（webnovel 1B×2）→ v2 50M**
+- **多代演进记录**：7.2M 百合单语料 → 6.3M LayerNorm 修复版 → 20M 双语料 → **v2 35M（webnovel 1B×2）→ v2 50M → v3 50M（rope+新 init）**
 
 ## 📊 模型演进与最佳结果
 
@@ -24,18 +24,21 @@
 | 20M 最终版 | 20M | 10L/8H/384d | 轻小说 v0+v1 (4.16亿 token) | 3.636 | 旧 |
 | v2 35M E1 | 34.7M | 10L/8H/512d | webnovel_v2 shard0 (1B) | 3.7076 | **v2** |
 | v2 35M E2 | 34.7M | 同 E1（恒温 5e-5 续训） | shard0 二遍（累计 2B） | 3.6372 | **v2** |
-| **v2 50M** | **51.4M** | **12L/9H/576d** | webnovel_v2 shard0 (1B) | **3.6154** | **v2** |
+| v2 50M | 51.4M | 12L/9H/576d | webnovel_v2 shard0 (1B) | 3.6154 | **v2** |
+| **v3 50M** | **51.4M** | **12L/9H/576d（rope+GPT-2 init）** | webnovel_v2 shard0 (1B) | **3.2097** | **v2** |
 
-### 🏆 核心 scaling 结论（2026-09-06，首个严格可比对照）
+### 🏆 核心 scaling 结论（2026-09-06 参数对照 + 2026-09-08 底层升级）
 
 同 tokenizer/语料/val/batch/LR，仅参数量不同：
 
 ```
-50M @ 1B (3.6154)  <  35M @ 2B (3.6372)  <  35M @ 1B (3.7076)
+v2 50M @ 1B (3.6154)  <  35M @ 2B (3.6372)  <  35M @ 1B (3.7076)
 ```
 
 **参数 scaling 收益 > 重复数据收益**：50M 单轮 1B 打赢 35M 把同批数据训两遍的 2B。
-（35M 各代 checkpoint 归档于 `result/`，见「项目结构」）
+
+**2026-09-08 新底层升级（v3）**：同结构同数据下把位置编码换 RoPE + GPT-2 式 init（双变量），val **3.6154 → 3.2097**（−0.406 nats，~11%）；rope 单变量短训独立支撑该方向（−1.0~2.1 nats @ 同 step），详见 `docs/EXPERIMENT_LOG.md`。
+（35M/50M 各代 checkpoint 归档于 `result/` 与 `log/`，见「项目结构」）
 
 ## 🧠 关键优化点（踩坑记录）
 
@@ -82,6 +85,18 @@
 - **AMP 更新门控**：仅 optimizer 真正完成参数更新才推进 scheduler/global_step/tokens_seen（消除 `lr_scheduler.step() before optimizer.step()` warning，记录 skipped 步数）
 - **精确 tokens_seen**：`+= x.numel()`（修复末批 partial batch 多计 3,584 token）
 
+### 12. GPT-2 式权重初始化（v3 前，消灭起点 loss 爆炸）
+早期 `nn.Embedding` 默认 N(0,1) + tie → head 权重 std=1，初始 CE 300+（正常应 ≈ln(vocab)=8.72）。
+修复：所有权重 N(0,0.02)，残差层 0.02/√(2·n_layer)；初始 CE 96.5→6.97，同配置最终 loss 好 ~0.2 nats。
+
+### 13. RoPE 旋转位置编码（默认，v3 起）
+sinusoidal（位置加到 embedding）与 rope（旋转 Q/K）二选一，`--position-encoding` 可切换，推理工具自动检测。
+50M/4000 步单变量对比：rope 全面胜出（val 3.780 vs 4.788 @3000 步），正式训练 v3 50M → 3.2097（v2 空间新 best）。
+
+### 14. torch.compile 兼容（checkpoint 前缀坑）
+`--compile` 训练吞吐 +75%（137.7k→240.9k tok/s）。但 compile 包装使 `gpt.state_dict()` 带 `_orig_mod.` 前缀，
+导致推理工具解析失败——修复：train.py 保存用 raw 模型（无前缀），generate/server/visualize 加载端兼容剥离（双保险）。
+
 ## 🏗️ 项目结构
 
 ```
@@ -107,10 +122,12 @@ minigpt-chinese/
 ├── visualize_attention.py  # 注意力热力图
 ├── result/             # 模型产物归档（按 参数量+token数 分子目录）
 │   ├── 35M参数+998Mtokens/   # v2 35M（E1+E2 完整）
-│   ├── 50M参数+998Mtokens/   # v2 50M ← 当前最优（checkpoint + 训练曲线 + 热力图）
+│   ├── 50M参数+998Mtokens/   # v2 50M（strict 参数对照基准）
 │   ├── 20M参数+416Mtokens/   # 20M 最终（旧空间）
 │   └── ...
 ├── log/                # 训练日志归档（按实验分子目录：step/val 历史 CSV、run_config）
+│   ├── 50M参数_v2+998Mtokens/  # v2 50M 日志
+│   └── 50M参数_v3+998Mtokens/  # v3 50M ← 当前最优（checkpoint + 日志，rope+新init）
 └── docs/
     ├── MiniGPT_Project_Status.md  # 项目状态文件——改代码前先读
     ├── EXPERIMENT_LOG.md          # 训练实验日志（含各阶段详细记录）
@@ -124,18 +141,19 @@ minigpt-chinese/
 ```bash
 pip install -r requirements.txt
 
-# 测试（56 个用例）
+# 测试
 python -m pytest test/ -v
 
-# 生成测试（默认加载 v2 35M；用 50M 就传 --ckpt）
+# 生成测试（默认加载 v2 35M；用 v3 就传 --ckpt --n-head 9）
 python generate.py --demo
 
 # Web demo（浏览器打开 http://127.0.0.1:8000）
 python app/server.py
 
-# 指定其他模型（如 v2 50M）
-python generate.py --ckpt result/50M参数+998Mtokens/checkpoint_best.pt \
-                   --tokenizer result/50M参数+998Mtokens/tokenizer_best.pkl
+# 指定其他模型（v3 50M：rope+新init，9 头）
+python generate.py --ckpt log/50M参数_v3+998Mtokens/checkpoint_best.pt \
+                   --tokenizer log/50M参数_v3+998Mtokens/tokenizer_best.pkl \
+                   --n-head 9
 ```
 
 ## 🧪 测试
@@ -152,7 +170,8 @@ python generate.py --ckpt result/50M参数+998Mtokens/checkpoint_best.pt \
 - [x] 阶段6：后端 API + 前端页面
 - [x] 阶段7：优化迭代（LN 修复、pack 模式、SDPA、KV cache、采样参数、20M 训练）
 - [x] 阶段8：v2 综合升级（webnovel 1B×2、35M→50M、block 512、resume 语义修复）—— 参数 scaling 结论成立
-- [ ] 阶段9：v2 50M + shard1/2 新数据（~2B 全新 token，参数×数据双升）
+- [x] 阶段8.5：v3 底层升级（2026-09-08：GPT-2 init + RoPE）—— 同结构 val 3.6154 → 3.2097（−0.406 nats）
+- [ ] 阶段9：v3 50M + shard1/2 新数据（~2B 全新 token，数据侧真 scaling）
 - [ ] 阶段10：部署上线
 
 ## 📜 数据说明
