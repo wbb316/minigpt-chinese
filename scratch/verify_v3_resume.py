@@ -9,7 +9,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'train'))
 from model.gpt import GPT  # noqa: E402
 
-ckpt = os.path.join(ROOT, 'log', '50M参数_v3+998Mtokens', 'checkpoint_latest.pt')
+ckpt = os.path.join(ROOT, 'log', '50M参数_v3_alpha+998Mtokens', 'checkpoint_latest.pt')
 ck = torch.load(ckpt, map_location='cpu', weights_only=True)
 print('顶层 keys:', list(ck.keys()))
 m = ck['model']

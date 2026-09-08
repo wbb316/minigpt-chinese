@@ -1,6 +1,6 @@
 import torch
 
-path = r'D:\WBB_Python\pytorch\log\50M参数_v3+998Mtokens\checkpoint_best.pt'
+path = r'D:\WBB_Python\pytorch\log\50M参数_v3_alpha+998Mtokens\checkpoint_best.pt'
 sd = torch.load(path, map_location='cpu', weights_only=True)
 
 # 模拟 generate.py / app/server.py / visualize_attention.py 的解析逻辑

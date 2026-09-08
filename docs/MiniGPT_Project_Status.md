@@ -11,20 +11,20 @@
 
 ## 当前阶段
 
-- [x] **★ v3 50M（新底层：RoPE + GPT-2 init）完成**（2026-09-08，`v3_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.2097** @ step 30455（webnovel_v2 评估空间**新 best**；同结构较 v2 50M 3.6154 −0.406 nats，底层双变量升级；详见 EXPERIMENT_LOG）
-- [x] **v2 50M 完成**（2026-09-06，`v2_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.6154** @ step 30454（已由 v3 超越，仍为 strict 参数对照基准，详见 EXPERIMENT_LOG）
+- [x] **★ v3_alpha 50M（新底层：RoPE + GPT-2 init）完成**（2026-09-08，`v3_alpha_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.2097** @ step 30455（webnovel_v2 评估空间**新 best**；同结构较 v2 50M 3.6154 −0.406 nats，底层双变量升级；详见 EXPERIMENT_LOG）
+- [x] **v2 50M 完成**（2026-09-06，`v2_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.6154** @ step 30454（已由 v3_alpha 超越，仍为 strict 参数对照基准，详见 EXPERIMENT_LOG）
 - [x] **★ 首个严格可比参数对照成立**：50M@1B(**3.6154**) < 35M@1B(3.7076) < 35M@2B(3.6372) → **参数 scaling 收益 > 重复数据收益**（同 tokenizer/语料/val/batch/LR，仅参数不同）
 - [x] **v2 35M 两轮训练完成**（2026-09-05→06，`v2_35M_ctx512_1B_E1+E2`）：35M / **2B token**（998M×2 同语料二遍）/ ctx512 / vocab6144，**v2 best = 35M v2 Epoch 2：val **3.6372** / train_eval **3.6063** / gap **0.0310** @ step 60915**（v2 evaluation space best，不与旧 20M raw loss 直接排名；详见 EXPERIMENT_LOG）
 - [x] Epoch 2 resume 修复完成并验证：`docs/RESUME_AUDIT.md`（next_epoch 语义 / `--lr-scheme const` 恒温 5e-5 / AMP 更新门控 / 精确 tokens_seen），云端与本地冒烟均通过
 - [x] 语料下载完成：`D:\小说\webnovel\webnovel_{0,1,2}.jsonl` 各 ~3.9GB（合计 11.7GB，~148 万行 / ~2790 本，均已验证无 JSON 错误）
 - [x] 清洗完成：shard0 → `data/train|val_webnovel_v2.txt`（云端 `/root/autodl-tmp/data/`，train 12.4 亿字符 / val 1.44 亿字符）
 - [x] v2 实验配置已跑（**已训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— 首次配置 batch128，随后实际成功运行配置调整为 batch64（总 token 不变）
-- [ ] 下一步（B 组主线）：**v3 50M 底层 + shard1/2 新数据**（~2B 全新 token，数据侧真 scaling）——v3@1B 末段未饱和，新数据预期继续显著降
+- [ ] 下一步（B 组主线）：**v3 系列 + shard1/2 新数据**（~2B 全新 token，数据侧真 scaling）——v3_alpha@1B 末段未饱和，新数据预期继续显著降；FFN 激活变体（v3_beta）待他人改码后并入对照
 
 > **分别记录、不要混排**：
 > - Historical best on old evaluation：20M val = 3.636（旧 tokenizer/语料/val 集/ctx256）
-> - Current webnovel_v2 eval space best：**v3 50M val = 3.2097**（RoPE+GPT-2 init 新底层，ctx512；v2 50M 3.6154 次之）
-> - 旧空间与 webnovel_v2 空间处于不同评估空间，**不构成同一排行榜**；v3 与 v2 系同空间**可比**。
+> - Current webnovel_v2 eval space best：**v3_alpha 50M val = 3.2097**（RoPE+GPT-2 init 新底层，ctx512；v2 50M 3.6154 次之）
+> - 旧空间与 webnovel_v2 空间处于不同评估空间，**不构成同一排行榜**；v3_alpha 与 v2 系同空间**可比**。
 
 ## Current Best Checkpoint
 
@@ -33,7 +33,7 @@
 - **Do not overwrite unless a new experiment improves it.**
 - v2 (35M, 2026-09-06, **Epoch 2**): val **3.6372** / train_eval **3.6063** / gap **0.0310**，**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result/35M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_webnovel_v2/`）
 - **v2 (50M, 2026-09-06): val 3.6154** / train_eval 3.5776 / gap 0.0378 —— strict 参数对照基准（sinusoidal+旧 init）；checkpoint: `result/50M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m/`）
-- **★ v3 (50M, 2026-09-08, RoPE+GPT-2 init): val 3.2097** / train_eval 3.1416 / gap 0.0680 —— **webnovel_v2 评估空间当前 best**（同结构同数据较 v2 50M −0.406 nats）；checkpoint: `log/50M参数_v3+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m_rope/`）
+- **★ v3_alpha (50M, 2026-09-08, RoPE+GPT-2 init): val 3.2097** / train_eval 3.1416 / gap 0.0680 —— **webnovel_v2 评估空间当前 best**（同结构同数据较 v2 50M −0.406 nats）；checkpoint: `log/50M参数_v3_alpha+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m_rope/`，下次训练时改名对齐）
 
 > 最新 ≠ 最好：跑失败/半成品实验时，**不要覆盖 `checkpoint_best.pt`**，也不要以最新 checkpoint 当作最佳结论。
 
@@ -47,10 +47,10 @@
 | v2 首跑 (Epoch 1) | 35M | 10L/8H/512d/bs512/vocab6144/tie（实际 batch64） | webnovel_v2 shard0 (9.98亿) | 3.7076 | 614d325 |
 | v2 Epoch 2 | 35M | 同 E1（const LR 5e-5 恒温续训） | webnovel_v2 shard0（第二遍，累计 19.96 亿） | 3.6372 | 16f0c1a |
 | v2 50M | 51.4M | 12L/9H/576d/bs512/vocab6144/tie（sinusoidal+旧init） | webnovel_v2 shard0 (9.98亿, 单轮) | 3.6154 | fffbffe |
-| **v3 50M** | 51.4M | 同结构 / **rope + GPT-2 init** / compile | webnovel_v2 shard0 (9.98亿, 单轮) | **3.2097** | 981d35f |
+| **v3_alpha 50M** | 51.4M | 同结构 / **rope + GPT-2 init** / FFN=ReLU / compile | webnovel_v2 shard0 (9.98亿, 单轮) | **3.2097** | 981d35f |
 
-> v2/v3 可比链（同评估空间）：**v3 50M@1B 3.2097** < v2 50M@1B 3.6154 < 35M@2B 3.6372 < 35M@1B 3.7076。
-> v2 50M < 35M 链 = strict 参数对照（仅参数不同）；v3 与 v2 50M 为**底层双变量升级**（rope+init），单变量贡献由 rope 短训单独支撑（详见 EXPERIMENT_LOG）。
+> v2/v3 可比链（同评估空间）：**v3_alpha 50M@1B 3.2097** < v2 50M@1B 3.6154 < 35M@2B 3.6372 < 35M@1B 3.7076。
+> v2 50M < 35M 链 = strict 参数对照（仅参数不同）；v3_alpha 与 v2 50M 为**底层双变量升级**（rope+init），单变量贡献由 rope 短训单独支撑（详见 EXPERIMENT_LOG）。
 
 > 完整记录在 `docs/EXPERIMENT_LOG.md`；豆包复盘报告在 `docs/report_output/`。
 > 比较条件见「实验比较规则」一节（val loss 单位 nats）。
@@ -58,7 +58,7 @@
 ## 已验证结论
 
 - **参数 scaling 收益 > 重复数据收益**：50M@1B(3.6154) < 35M@2B(3.6372) < 35M@1B(3.7076)——本项目首个**同 tokenizer/语料/val/batch/LR 严格可比**结论（2026-09-06）
-- **★ 新底层（RoPE + GPT-2 init）显著有效**（2026-09-08）：v3 50M(3.2097) < v2 50M(3.6154)，同结构同数据 −0.406 nats；rope 单变量短训独立支撑（−1.0~2.1 nats @ 同 step），GPT-2 init 修复起点 loss（300+ → 正常）
+- **★ 新底层（RoPE + GPT-2 init）显著有效**（2026-09-08）：v3_alpha 50M(3.2097) < v2 50M(3.6154)，同结构同数据 −0.406 nats；rope 单变量短训独立支撑（−1.0~2.1 nats @ 同 step），GPT-2 init 修复起点 loss（300+ → 正常）
 - **增加参数 + 数据有效**：20M(3.636) < LN 修复版(4.188)（同 vocab6144/tokenizer 下可比）
 - **验证集按文件/按书划分**：为避免数据泄漏（按 token 顺序切可能把整本书放进 val，评估失真）而设，使评估结果更可靠；不同实验版本的 loss 变化（如 4.5 → 3.79）**不能归因于单一因素**
 - **标准 LayerNorm**（有偏方差 + eps）收敛更稳、val 更好
@@ -73,14 +73,16 @@
 - v2 E1（3.7076）数值上未破 20M 纪录（3.636），但 **tokenizer/语料不同不可直接比**；同 tokenizer + 同 val 集下的 35M vs 20M 增益仍无可比数据
 - 20M 模型继续堆数据（4.16亿 → 10 亿 token）是否继续降 loss 未验证
 - block 512 相对 256 的长程收益未在同一语料上验证
-- **v3 底层在更大数据（shard1/2 新 token）上是否延续 −0.4 nats 优势**未验证（下一步主线）
+- **v3 系列在更大数据（shard1/2 新 token）上是否延续 −0.4 nats 优势**未验证（下一步主线）
+- **FFN 激活（ReLU→GELU 等）能否再降 val** 未验证（v3_beta 待他人改码）
 - 中文生成质量无系统评估，目前仅主观观感
 
 ## 下一阶段计划
 
-1. **v3 50M 底层 + shard1/2 新数据**：~2B 全新 token（webnovel_v2 shard1/2），单轮或按 epoch 规划；重点盯 v3 底层在新数据上的 scaling 斜率与 gap 走势
+1. **v3 系列 + shard1/2 新数据**：~2B 全新 token（webnovel_v2 shard1/2），单轮或按 epoch 规划；重点盯 v3_alpha 底层在新数据上的 scaling 斜率与 gap 走势
 2. 若数据侧显著降 loss → 升级事实表/Status 的可比链；考虑是否回归 35M（成本 ×2/3）做参数 × 数据的交叉验证
-3. 生成质量评估：用 v3 模型跑一批示例 + 注意力热力图，主观抽检中文续写观感
+3. 生成质量评估：用 v3_alpha 模型跑一批示例 + 注意力热力图，主观抽检中文续写观感
+4. **v3_beta（FFN 激活变体）**：他人改码后，先 4000 步短训单变量对比 ReLU vs 新激活 → 胜出再并入主线
 
 ### Scaling 原则（两阶段）
 
@@ -103,7 +105,7 @@ v2 同时升级三个维度——模型扩大（20M → 35M/50M）、context 增
 - **LR 调度**：warmup 500 + cosine 衰减到 **max_lr×0.1**（`--min-lr-ratio 0.1`，不再到 0）
 - **位置编码默认 rope**（`--position-encoding`，sinusoidal 保留可切换；推理工具自动检测旧 checkpoint）
 - **训练默认 --compile**（吞吐 +75%）；保存走 raw 模型 → checkpoint 无 `_orig_mod.` 前缀（推理工具 load 端已兼容前缀剥离，双保险）
-- **推理工具头数**：generate/visualize 默认 n_head=8（35M）；**50M/v3 是 9 头，需显式 `--n-head 9`**
+- **推理工具头数**：generate/visualize 默认 n_head=8（35M）；**50M（v2 50M/v3_alpha 等）是 9 头，需显式 `--n-head 9`**
 - **tie_embeddings 默认开**；vocab 6144；tokenizer 采样 4M 字符
 - **数据模式**：小语料 slide（stride=1），100M+ 语料 pack（stride=block_size）
 - **block_size 默认 256**；>256 需 SDPA（`model/attention.py` 已含 SDPA 训练路径）
@@ -142,12 +144,13 @@ v{版本}_{模型}_ctx{context}_{数据规模}
 
 **版本号语义（2026-09-08 起明确）**：
 - **v1/v2 = 评估空间代际**：tokenizer/语料/val 集切换（v1 = 百合/轻小说旧空间；v2 = webnovel_v2/v6144/ctx512 空间）
-- **v3 = 架构新底层代际**（2026-09-08 起）：GPT-2 init + RoPE 的模型代际；**评估空间沿用 v2（webnovel_v2/v6144/同 val）** → v3 数字与 v2 系**直接可比**，不可误读为换了语料
+- **v3 = 50M 新底层实验系列**（2026-09-08 起）：GPT-2 init + RoPE 的模型系列；**评估空间沿用 v2（webnovel_v2/v6144/同 val）** → v3 数字与 v2 系**直接可比**，不可误读为换了语料
+- **v3 内后缀 = 同系列变体序号**（不是成熟度/质量排序）：`v3_alpha` = 系列第 1 版（ReLU FFN）；`v3_beta` = 后续换 FFN 激活的变体（待代码修改后训练）
 
 示例：
 - `v1_20M_ctx256_400M`（20M 最终版）
 - `v2_35M_ctx512_1B`（v2 综合升级实验）
-- `v3_50M_ctx512_1B`（v3 新底层 50M，webnovel_v2 空间新 best 3.2097）
+- `v3_alpha_50M_ctx512_1B`（v3 系列第 1 版：rope+新init+ReLU，webnovel_v2 空间新 best 3.2097）
 
 以下位置**统一使用该 ID**（新建实验时按格式命名）：
 - checkpoint 输出目录

@@ -7,8 +7,8 @@ ROOT = r'D:\WBB_Python\pytorch'
 sys.path.insert(0, ROOT)
 from model.gpt import GPT  # noqa: E402
 
-ckpt = os.path.join(ROOT, 'log', '50M参数_v3+998Mtokens', 'checkpoint_best.pt')
-tok_path = os.path.join(ROOT, 'log', '50M参数_v3+998Mtokens', 'tokenizer_best.pkl')
+ckpt = os.path.join(ROOT, 'log', '50M参数_v3_alpha+998Mtokens', 'checkpoint_best.pt')
+tok_path = os.path.join(ROOT, 'log', '50M参数_v3_alpha+998Mtokens', 'tokenizer_best.pkl')
 
 # --- 复刻 generate.py 的剥离 + 解析逻辑 ---
 sd = torch.load(ckpt, map_location='cpu', weights_only=True)

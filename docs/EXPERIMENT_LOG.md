@@ -111,21 +111,21 @@
 - **决定**：默认 `position_encoding` 切 **rope**（GPT/train.py），sinusoidal 保留可切换（旧 checkpoint 推理自动检测）；旧 35M/50M（sinusoidal）结果不受影响
 - commit：89f11a8（实现）+ e4a9a16（默认切 rope）
 
-### v3_50M_ctx512_1B — 50M 新底层正式训练（RoPE + GPT-2 init，2026-09-08）
+### v3_alpha_50M_ctx512_1B — 50M 新底层正式训练 v3_alpha（RoPE + GPT-2 init，2026-09-08）
 
-- **Experiment ID**：`v3_50M_ctx512_1B`（**v3 命名 = 架构新底层代际**：GPT-2 init + RoPE；评估空间沿用 webnovel_v2/v6144/同 val 集 → **与 v2 系数字直接可比**）
+- **Experiment ID**：`v3_alpha_50M_ctx512_1B`（**v3 = 50M 新底层系列**：GPT-2 init + RoPE；**alpha = 系列第 1 版（ReLU FFN）**；beta = 后续换 FFN 激活的变体；评估空间沿用 webnovel_v2/v6144/同 val 集 → **与 v2 系数字直接可比**）
 - **status**：`complete`（★ 同评估空间**新 best：3.2097**，打破 v2 50M 3.6154）
 - **date**：2026-09-08 ｜ **commit**：981d35f（rope 默认确定后；launcher `scratch/run_50m_rope_cloud.sh`）
-- **模型配置**：**12L/9H/576d**/bs512/vocab6144/tie/dropout0.1；parameters = **51,411,840**（与 v2 50M 完全同结构，纯底层替换）
+- **模型配置**：**12L/9H/576d**/bs512/vocab6144/tie/dropout0.1/FFN=ReLU；parameters = **51,411,840**（与 v2 50M 完全同结构，纯底层替换）
 - **与 v2 50M 的差异（双变量，非单变量）**：① **GPT-2 init**（N(0,0.02)+residual 缩放，commit ac7928d）② **position_encoding=rope**（89f11a8/e4a9a16）；rope-vs-sinusoidal 单变量短训已独立证明 rope 赢 ~1.0-2.1 nats（见上节）
 - **训练配置**：batch=64；cosine（warmup 1000 → min 5e-5）；epochs=1；total_steps=30,455（自然结束）；**compile=True**
 - **train tokens**：997,945,856（≈1B，shard0 单轮；严格 1:20 口径）
 - **best val**：**3.2097** @ step 30,455（epoch 末；7 次验证全 best）
 - **train_eval / gap**：3.142 / +0.068
 - **训练时间**：16:54→18:08（~1:14，compile 加速后 ~7.2 step/s）｜ **AMP skipped**：8 步
-- **同点对比 v3 vs v2 50M**（同结构同数据同 batch/LR，底层升级，各 step val）：
+- **同点对比 v3_alpha vs v2 50M**（同结构同数据同 batch/LR，底层升级，各 step val）：
 
-| step | v2 50M (sinusoidal+旧init) | v3 50M (rope+新init) | 差 |
+| step | v2 50M (sinusoidal+旧init) | v3_alpha 50M (rope+新init) | 差 |
 |---|---|---|---|
 | 5000 | 4.747 | **3.632** | −1.115 |
 | 10000 | 4.121 | **3.463** | −0.658 |
@@ -136,7 +136,7 @@
 | 30454/455 | 3.6154 | **3.2097** | −0.406 |
 
 - **核心结论（同一评估空间，直接可比）**：
-  - v3 50M **3.2097** < v2 50M **3.6154**（底层升级 → 好 **0.406 nats**，~11% 相对；rope 短训同点差与正式 run 尾段收敛吻合）
-  - 全梯度重排：**v3 50M 3.2097 < v2 50M 3.6154 < 35M E2 3.6372 < 35M E1 3.7076**
+  - v3_alpha 50M **3.2097** < v2 50M **3.6154**（底层升级 → 好 **0.406 nats**，~11% 相对；rope 短训同点差与正式 run 尾段收敛吻合）
+  - 全梯度重排：**v3_alpha 50M 3.2097 < v2 50M 3.6154 < 35M E2 3.6372 < 35M E1 3.7076**
   - gap 0.068 较 v2 50M 0.038 偏大：train_eval 压得更低（3.142 vs 3.578）是大容量+新底层拟合更紧的**预期伴随现象**；val 单调下降无拐点 → **无过拟合信号**（沿用 v2 scaling 分析 §4 趋势判据）
-- **备注**：compile 训练导致 checkpoint key 带 `_orig_mod.` 前缀 → 已修复（commit a31072b：A=推理工具自动剥离前缀，B=train.py 保存 raw_gpt 防复发）；产物归档 `log/50M参数_v3+998Mtokens/`（best/latest + tokenizer + run_config + step/val 历史）；生成经 `python generate.py --ckpt ... --n-head 9` 验证正常；**下一步主线 = v3 底层 + shard1/2 新数据**（参数已定型，数据侧真 scaling）。
+- **备注**：compile 训练导致 checkpoint key 带 `_orig_mod.` 前缀 → 已修复（commit a31072b：A=推理工具自动剥离前缀，B=train.py 保存 raw_gpt 防复发）；产物归档 `log/50M参数_v3_alpha+998Mtokens/`（best/latest + tokenizer + run_config + step/val 历史 + 曲线图）；生成经 `python generate.py --ckpt ... --n-head 9` 验证正常；**下一步主线 = v3 系列 + shard1/2 新数据**（参数已定型，数据侧真 scaling；FFN 激活变体待 v3_beta）。
