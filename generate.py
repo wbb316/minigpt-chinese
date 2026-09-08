@@ -50,17 +50,22 @@ def load_model(ckpt_path='result/35M参数+998Mtokens/checkpoint_best.pt',
     block_size = sd['pos_emb.pe'].shape[1]
     # 自动检测位置编码：state_dict 含 rope buffer → rope；否则 sinusoidal（旧模型）
     pe = 'rope' if 'rope.cos_cached' in sd else 'sinusoidal'
+    # 自动检测 FFN：含 gate_proj → swiglu（v3 FFN 变体）；否则 relu/gelu 的 fc1/fc2
+    # （relu 与 gelu 参数名相同、无法从权重区分 → 默认按 relu 建，输出等价）
+    ff_type = 'swiglu' if any(k.endswith('gate_proj.weight') for k in sd) else 'relu'
+    ff_hidden = sd['blocks.0.ff.gate_proj.weight'].shape[0] if ff_type == 'swiglu' else None
 
     gpt = GPT(vocab_size=vocab_size, n_layer=n_layer, n_head=n_head,
               n_embd=n_embd, block_size=block_size,
-              position_encoding=pe)
+              position_encoding=pe, ff_type=ff_type, ff_hidden=ff_hidden)
     gpt.load_state_dict(sd)
     gpt.to(device).eval()
 
     with open(tok, 'rb') as f:
         tokenizer = pickle.load(f)
     print(f'模型: {n_layer}层/{n_head}头/{n_embd}维, 词表{vocab_size}, '
-          f'block_size={block_size}, 位置编码: {pe}')
+          f'block_size={block_size}, 位置编码: {pe}, FFN: {ff_type}'
+          + (f'(h={ff_hidden})' if ff_hidden else ''))
     return gpt, tokenizer
 
 

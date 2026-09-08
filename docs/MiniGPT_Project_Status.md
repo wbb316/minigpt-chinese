@@ -19,7 +19,8 @@
 - [x] 语料下载完成：`D:\小说\webnovel\webnovel_{0,1,2}.jsonl` 各 ~3.9GB（合计 11.7GB，~148 万行 / ~2790 本，均已验证无 JSON 错误）
 - [x] 清洗完成：shard0 → `data/train|val_webnovel_v2.txt`（云端 `/root/autodl-tmp/data/`，train 12.4 亿字符 / val 1.44 亿字符）
 - [x] v2 实验配置已跑（**已训练验证**）：`docs/experiment_config_v2.yaml`（**10L/512d ≈35M**/bs512/vocab6144/tie，webnovel ~1B token，pack，min_lr=5e-5）—— 首次配置 batch128，随后实际成功运行配置调整为 batch64（总 token 不变）
-- [ ] 下一步（B 组主线）：**v3 系列 + shard1/2 新数据**（~2B 全新 token，数据侧真 scaling）——v3_alpha@1B 末段未饱和，新数据预期继续显著降；FFN 激活变体（v3_beta）待他人改码后并入对照
+- [ ] 下一步（B 组主线）：**v3 系列 + shard1/2 新数据**（~2B 全新 token，数据侧真 scaling）——v3_alpha@1B 末段未饱和，新数据预期继续显著降；FFN 默认已定 **swiglu**（见下条），正式 run 直接用 swiglu
+- [x] **★ v3 FFN 变体短程对照完成**（2026-09-08，`v3_ffn_variants_shortrun`）：relu/gelu/swiglu 各 **5000 步**（同 seed 42 / **从零随机初始化** / **8e-4 cosine（warmup 1000 → min 5e-5）**，**唯一变量 = `--ff-type`**），best val @5000 步：**swiglu 3.655 < gelu 3.688 < relu 3.695** → **SwiGLU 胜出**（比 relu 好 0.040 nats，领先从 step 1000 起建立、全程一致）→ **已把默认 FFN 从 relu 改成 swiglu**（relu/gelu 保留可回退）；三变体短程值比 v3_alpha 正式 run 同点 val@5000=3.6321 略高——**本实验从零训练、与 v3_alpha 正式 run 的起点与调度不同**，**三变体之间同条件可比**；详见 EXPERIMENT_LOG
 
 > **分别记录、不要混排**：
 > - Historical best on old evaluation：20M val = 3.636（旧 tokenizer/语料/val 集/ctx256）
@@ -59,6 +60,7 @@
 
 - **参数 scaling 收益 > 重复数据收益**：50M@1B(3.6154) < 35M@2B(3.6372) < 35M@1B(3.7076)——本项目首个**同 tokenizer/语料/val/batch/LR 严格可比**结论（2026-09-06）
 - **★ 新底层（RoPE + GPT-2 init）显著有效**（2026-09-08）：v3_alpha 50M(3.2097) < v2 50M(3.6154)，同结构同数据 −0.406 nats；rope 单变量短训独立支撑（−1.0~2.1 nats @ 同 step），GPT-2 init 修复起点 loss（300+ → 正常）
+- **★ FFN：SwiGLU > GELU > ReLU**（2026-09-08，5000 步短程、同 seed / **从零** / cosine 8e-4（warmup 1000 → min 5e-5）、唯一变量 = `--ff-type`）：best val @5000 步 **3.655 / 3.688 / 3.695** nats → swiglu 比 relu 好 **0.040 nats**，微弱胜出（领先从 step 1000 起建立、全程一致）→ **已把默认 FFN 从 relu 改成 swiglu**（relu 保留可回退）；方法学口径：relu↔gelu 严格单变量（参数/形状/同 seed 初始化逐位一致）；swiglu 属「FFN 结构变体」对比（门控结构 + 参数量 +0.018% + 同 seed 不同形 → 起点数值不同），**非纯激活单变量**
 - **增加参数 + 数据有效**：20M(3.636) < LN 修复版(4.188)（同 vocab6144/tokenizer 下可比）
 - **验证集按文件/按书划分**：为避免数据泄漏（按 token 顺序切可能把整本书放进 val，评估失真）而设，使评估结果更可靠；不同实验版本的 loss 变化（如 4.5 → 3.79）**不能归因于单一因素**
 - **标准 LayerNorm**（有偏方差 + eps）收敛更稳、val 更好
@@ -74,7 +76,7 @@
 - 20M 模型继续堆数据（4.16亿 → 10 亿 token）是否继续降 loss 未验证
 - block 512 相对 256 的长程收益未在同一语料上验证
 - **v3 系列在更大数据（shard1/2 新 token）上是否延续 −0.4 nats 优势**未验证（下一步主线）
-- **FFN 激活（ReLU→GELU 等）能否再降 val** 未验证（v3_beta 待他人改码）
+- **FFN 激活能否再降 val → 已对照验证（2026-09-08，5000 步短程）**：**swiglu 3.655 < gelu 3.688 < relu 3.695**，swiglu 比 relu 好 0.040 nats → 已成为默认 FFN；但**长程 / shard1/2 大数据上的收益延续**仍待 v3 正式 run 验证
 - 中文生成质量无系统评估，目前仅主观观感
 
 ## 下一阶段计划
@@ -82,7 +84,7 @@
 1. **v3 系列 + shard1/2 新数据**：~2B 全新 token（webnovel_v2 shard1/2），单轮或按 epoch 规划；重点盯 v3_alpha 底层在新数据上的 scaling 斜率与 gap 走势
 2. 若数据侧显著降 loss → 升级事实表/Status 的可比链；考虑是否回归 35M（成本 ×2/3）做参数 × 数据的交叉验证
 3. 生成质量评估：用 v3_alpha 模型跑一批示例 + 注意力热力图，主观抽检中文续写观感
-4. **v3_beta（FFN 激活变体）**：他人改码后，先 4000 步短训单变量对比 ReLU vs 新激活 → 胜出再并入主线
+4. **v3_beta（FFN 激活变体）— 已完成（2026-09-08）**：从零随机初始化 5000 步短程对照 swiglu 胜出（**3.655 < gelu 3.688 < relu 3.695**，比 relu 好 0.040 nats）→ **已并入主线：默认 FFN = swiglu**（`DEFAULT_FF_TYPE='swiglu'`，relu/gelu 保留可回退）；v3 正式训练（shard1/2 新数据）直接用 swiglu
 
 ### Scaling 原则（两阶段）
 
@@ -104,6 +106,24 @@ v2 同时升级三个维度——模型扩大（20M → 35M/50M）、context 增
 - **采样默认值**：temperature 0.8 / top_p 0.9 / repetition_penalty 1.15（`model/sampling.py`）
 - **LR 调度**：warmup 500 + cosine 衰减到 **max_lr×0.1**（`--min-lr-ratio 0.1`，不再到 0）
 - **位置编码默认 rope**（`--position-encoding`，sinusoidal 保留可切换；推理工具自动检测旧 checkpoint）
+- **FFN 默认 swiglu（2026-09-08 对照后定版）**：`--ff-type {relu,gelu,swiglu}`，**默认 `swiglu`**
+  （2026-09-08 起；短程对照 swiglu 胜出后从 relu 切来；relu/gelu 原实现保留未删，可随时回退；回退点 = git commit 004ce65）
+  - 默认值实现：`model/layers.py` `DEFAULT_FF_TYPE = 'swiglu'` / `FF_TYPES = ('relu','gelu','swiglu')`；
+    `FeedForward(dim, dropout, ff_type=DEFAULT_FF_TYPE, ff_hidden=None)`；`train/train.py --ff-type` 默认 = swiglu
+  - `relu`/`gelu`：参数名与形状**完全一致**（fc1/fc2）→ 旧 checkpoint 直接加载，单变量只换激活
+  - `swiglu`：`gate_proj/up_proj → silu(gate)*up → down_proj`；中间维 h 由
+    `swiglu_hidden(d)` 解 `3hd ≈ 8d²`（h≈8d/3，d=576 → **h=1536**），
+    FFN 层参数与 4d 版差 **+0.036%**（层 2,657,856 vs 2,657,088）→ 参数公平
+  - 残差分支输出投影的 GPT-2 缩放 init：relu/gelu 缩 fc2、swiglu 缩 down_proj
+  - `--init-from <ckpt>`：**只加载模型权重**（优化器全新），用于让变体从同一 checkpoint 出发做
+    **续训式**对照（**本轮 from-scratch 对照未使用**，保留备用）；
+    relu↔swiglu 的权重由 `model/ffn_adapter.py` 改写（fc1 对半切→gate/up，
+    fc2 前 h 列→down，**数值原样搬运、无随机数**），加载后无 missing/unexpected
+  - 推理侧自动检测 ff_type：state_dict 含 `gate_proj` → swiglu，否则按 relu（旧 checkpoint
+    不受默认值影响）；短程对照跑法记录见 EXPERIMENT_LOG `v3_ffn_variants_shortrun`
+  - launcher：`scratch/run_ffn_scratch_cloud.sh`（云端三个变体从零顺序跑）；
+    本地验证：`scratch/ffn_cpu_bench.py`；测试：`test/test_ffn.py`（12 项）
+  - step CSV 新增 `tokens_per_sec` 列（实测吞吐，FFN 对比用）；run 末尾打印显存峰值
 - **训练默认 --compile**（吞吐 +75%）；保存走 raw 模型 → checkpoint 无 `_orig_mod.` 前缀（推理工具 load 端已兼容前缀剥离，双保险）
 - **推理工具头数**：generate/visualize 默认 n_head=8（35M）；**50M（v2 50M/v3_alpha 等）是 9 头，需显式 `--n-head 9`**
 - **tie_embeddings 默认开**；vocab 6144；tokenizer 采样 4M 字符
@@ -145,7 +165,7 @@ v{版本}_{模型}_ctx{context}_{数据规模}
 **版本号语义（2026-09-08 起明确）**：
 - **v1/v2 = 评估空间代际**：tokenizer/语料/val 集切换（v1 = 百合/轻小说旧空间；v2 = webnovel_v2/v6144/ctx512 空间）
 - **v3 = 50M 新底层实验系列**（2026-09-08 起）：GPT-2 init + RoPE 的模型系列；**评估空间沿用 v2（webnovel_v2/v6144/同 val）** → v3 数字与 v2 系**直接可比**，不可误读为换了语料
-- **v3 内后缀 = 同系列变体序号**（不是成熟度/质量排序）：`v3_alpha` = 系列第 1 版（ReLU FFN）；`v3_beta` = 后续换 FFN 激活的变体（待代码修改后训练）
+- **v3 内后缀 = 同系列变体序号**（不是成熟度/质量排序）：`v3_alpha` = 系列第 1 版（ReLU FFN）；`v3_beta` = FFN 激活变体（gelu/swiglu；2026-09-08 短程对照已收官，swiglu 胜出并成为默认，见 EXPERIMENT_LOG）
 
 示例：
 - `v1_20M_ctx256_400M`（20M 最终版）

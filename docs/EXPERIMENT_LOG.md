@@ -140,3 +140,84 @@
   - 全梯度重排：**v3_alpha 50M 3.2097 < v2 50M 3.6154 < 35M E2 3.6372 < 35M E1 3.7076**
   - gap 0.068 较 v2 50M 0.038 偏大：train_eval 压得更低（3.142 vs 3.578）是大容量+新底层拟合更紧的**预期伴随现象**；val 单调下降无拐点 → **无过拟合信号**（沿用 v2 scaling 分析 §4 趋势判据）
 - **备注**：compile 训练导致 checkpoint key 带 `_orig_mod.` 前缀 → 已修复（commit a31072b：A=推理工具自动剥离前缀，B=train.py 保存 raw_gpt 防复发）；产物归档 `log/50M参数_v3_alpha+998Mtokens/`（best/latest + tokenizer + run_config + step/val 历史 + 曲线图）；生成经 `python generate.py --ckpt ... --n-head 9` 验证正常；**下一步主线 = v3 系列 + shard1/2 新数据**（参数已定型，数据侧真 scaling；FFN 激活变体待 v3_beta）。
+
+### v3 FFN 变体（relu / gelu / swiglu）— 短程对照完成（2026-09-08）
+
+- **Experiment ID**：`v3_ffn_variants_shortrun`（配置：`docs/experiment_config_ffn.yaml`；launcher：`scratch/run_ffn_scratch_cloud.sh`）
+- **status**：`complete`（★ 5000 步短程对照收官：**SwiGLU 胜出 → 已把默认 FFN 从 relu 改成 swiglu**）
+- **目的**：在 v3_alpha 的底层（RoPE + GPT-2 init）上**只改 FFN**，测激活/结构对性能的影响
+- **三个变体**：
+
+| 变体 | FFN 结构 | 中间维 | FFN 层参数 | 总参数 | 初始化 |
+|---|---|---|---|---|---|
+| v3-relu | `fc1→ReLU→fc2` | 2304 (=4d) | 2,657,088 | 51,411,840 | 从零 + GPT-2 init（seed 42） |
+| v3-gelu | `fc1→GELU→fc2` | 2304 (=4d) | 2,657,088 | 51,411,840 | 同上（参数名/形状逐位一致） |
+| v3-swiglu | `gate/up→silu(gate)*up→down` | 1536 (≈8d/3) | 2,657,856 (+0.036%) | 51,421,056 (+0.018%) | 同上 seed，但张量形状不同 → 起点数值不同 |
+
+- **对照条件（三者逐项相同，唯一变量 = `--ff-type`）**：
+  - 从零随机初始化（**非**从 v3_alpha checkpoint 续训）+ 同 seed 42（数据流一致）
+  - 同数据 shard0 / batch 64 / ctx 512 / 12L-576d-9H / vocab 6144 / tie / dropout 0.1
+  - 同 lr **8e-4 cosine**（warmup 1000 → min 5e-5）/ 同 weight_decay 0.05 / fp16 / compile
+  - 同 **5000 步** / val_every 1000 / 同 eval_batches / 同 val 集
+  > **为何从零而非续训**：续训式对照（从 v3_alpha 的 relu 权重出发）里 relu 天然占优——换激活要花步数
+  > 从扰动中恢复，5000 步可能只是恢复期；从零同 seed 才能公平回答「哪个激活更好」
+  > （launcher `scratch/run_ffn_scratch_cloud.sh` 头部注释同此口径）。
+  > 三个变体**同条件可比**（唯一变量 = ff-type）；与 v3_alpha 正式 run 的**绝对 loss 不完全可比**
+  > （起点/调度细节不同），本实验只用于**三变体之间的排序**。
+- **方法学口径（写进正式记录时勿省略）**：
+  - **relu ↔ gelu 是严格单变量 ✅**：参数名/形状/参数量逐位一致（51,411,840 = 51,411,840），
+    同 seed 初始化完全一致，只换激活函数——这组对比最干净。
+  - **swiglu ↔ 前两者不是 100% 单变量 ⚠️**：① 参数量 +0.018%（h=1536 已按参数量对齐，
+    可忽略但非逐位相同）；② 更重要——**结构不同 → 同 seed 下初始化数值并不一致**：
+    seed 固定的是随机数流，swiglu 的 gate/up/down 与 relu 的 fc1/fc2 形状不同，
+    随机流消耗方式不同 → 起点权重数值与 relu/gelu 不完全相同。
+  - 准确表述：**relu↔gelu 是干净单变量；swiglu 属「FFN 结构变体」对比**（门控结构 + 参数量
+    +0.018% + 同 seed 不同形），**非纯激活单变量**。
+- **代码改动**（2026-09-08 对照后定版：`DEFAULT_FF_TYPE = 'swiglu'`，默认 = **swiglu**；relu/gelu 原实现保留未删，可随时回退）：
+  - `model/layers.py`：新增 `DEFAULT_FF_TYPE = 'swiglu'` 与 `FF_TYPES = ('relu','gelu','swiglu')`；
+    `FeedForward(dim, dropout, ff_type=DEFAULT_FF_TYPE, ff_hidden=None)`；`swiglu_hidden(d)` 解
+    `3hd≈8d²`（h≈8d/3）；relu/gelu 参数名形状与 v3_alpha 完全一致
+  - `model/gpt.py`：`GPT(..., ff_type=DEFAULT_FF_TYPE, ...)`；残差缩放 init 改为缩 `out_proj_weight()`
+    （relu/gelu→fc2，swiglu→down_proj）
+  - `model/ffn_adapter.py`（新）：relu↔swiglu checkpoint 权重映射（fc1 对半切→gate/up，
+    fc2 前 h 列→down；**数值原样搬运、无随机数**），加载后无 missing/unexpected
+  - `train/train.py`：`--ff-type` 默认 = swiglu；另有 `--ff-hidden/--ff-hidden-round/--init-from/--init-optimizer`；
+    run config 记录 ff 信息；step CSV 新增 `tokens_per_sec` 列；结束打印吞吐 + 显存峰值
+  - 推理侧（`generate.py` / `app/server.py` / `visualize_attention.py`）从 state_dict 自动检测
+    ff_type（含 `gate_proj` → swiglu，否则 relu）——旧 checkpoint 不受默认值影响
+  - 测试 `test/test_ffn.py`（12 项）：relu 数值回归、relu↔gelu 同名同形状、swiglu 参数对齐、
+    适配器双向映射精确、三变体经适配器加载后起点 CE 量级相当、默认值 = swiglu 回归、
+    默认 swiglu 端到端短训降 loss、CLI 参数可见性
+- **结果（best val @5000 步，nats，webnovel_v2 评估空间）**：
+
+| 排名 | 变体 | best val @5000 步 | 差值（相对 swiglu） |
+|---|---|---|---|
+| **1（胜出）** | **swiglu** | **3.655** | — |
+| 2 | gelu | 3.688 | +0.033 |
+| 3 | relu | 3.695 | +0.040 |
+
+→ **SwiGLU 微弱胜出**（比 relu 好 **0.040 nats**），排名 **swiglu > gelu > relu**；
+  领先从 **step 1000** 起即建立、**全程一致**；据此**已把默认 FFN 从 relu 改成 swiglu**
+  （relu/gelu 保留可回退）。
+
+- **备注**：本实验的默认值定版为 **swiglu**（`DEFAULT_FF_TYPE`），relu/gelu 保留可回退；
+  `--init-from` / `--init-optimizer` / `model/ffn_adapter.py` 是本次一并实现的能力
+  （让变体也能从同一 checkpoint 出发做续训式对照），**本轮 from-scratch 对照未使用它们**。
+- **本地 CPU 结构性验证（`scratch/ffn_cpu_bench.py`，600 步，4L/128d/4H，小语料 ——
+  **不是性能结论**，只证明代码路径/对照流程闭环）**：
+
+| 变体 | FFN 层参数 | 总参数 | train EMA | val | train_eval | gap | init 映射 |
+|---|---|---|---|---|---|---|---|
+| relu（从零） | 131,712 | 1,051,344 | 6.235 | 5.504 | 5.447 | +0.058 | N/A |
+| relu（同起点） | 131,712 | 1,051,344 | 4.967 | 4.873 | 4.842 | +0.031 | ok |
+| gelu（同起点） | 131,712 | 1,051,344 | 5.025 | 4.906 | 4.877 | +0.029 | ok |
+| swiglu（同起点） | 132,912 | 1,056,144 | 5.375 | 4.921 | 4.887 | +0.035 | ok |
+
+  → relu↔gelu 零改写、relu→swiglu 经 adapter 映射均可正常从**同一 checkpoint** 出发
+  （无 missing/unexpected），参数对齐符合设计（swiglu FFN 层 +0.9%、总参数 +0.5%，小 dim 下
+  对齐粒度更粗）；600 步差异在噪声范围内——**本表仅验证代码路径（含 adapter 同起点能力），
+  非性能结论**；本轮正式对照为**从零随机初始化**、未走 adapter 路径，**方向性结论见上方
+  结果表**（云端 5000 步 50M run 已收官）。
+
+- **下一步**：默认 FFN **已是 swiglu**（train `--ff-type` 默认值，无需再显式指定）；后续
+  v3 正式训练（**新数据 shard1/2**）将用 swiglu 跑主线。

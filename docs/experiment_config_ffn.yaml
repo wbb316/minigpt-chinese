@@ -1,0 +1,128 @@
+# =====================================================================
+# experiment_config_ffn.yaml — v3 FFN 变体短程对照（2026-09-08）
+# 创建：2026-09-08 ｜ 实验 ID：v3_ffn_variants_shortrun
+# 说明：train.py 走命令行参数，本文件是“唯一事实来源”。
+#       开跑前按最下方等价命令逐项核对。val loss 单位 nats。
+# 状态：✅ 已完成（2026-09-08）→ SwiGLU 胜出，已成为默认 FFN
+#       （DEFAULT_FF_TYPE = 'swiglu'，relu/gelu 保留可回退；见 meta.result 与文件底部结果表）
+# =====================================================================
+
+meta:
+  name: v3_ffn_variants_shortrun
+  version: v3                       # 评估空间沿用 v2（webnovel_v2 / v6144 / 同 val 集）
+  date: 2026-09-08
+  purpose: >
+    FFN 激活/结构单变量对照。沿用 v3_alpha 的底层（RoPE + GPT-2 init + 12L-576d-9H），
+    唯一变量 = --ff-type；三个变体均**从零随机初始化**（seed 42，不加载任何 checkpoint）：
+      ① relu   = 原实现（对照组，同条件重跑一遍）
+      ② gelu   = Linear→GELU→Linear（只换激活，参数名/形状/参数量与 relu 逐位一致）
+      ③ swiglu = gate/up→silu(gate)*up→down（h=1536，FFN 层参数 +0.036%）
+    短程 5000 步（=1.638 亿 token）判断方向，胜出者才并入最终 MiniGPT-v3。
+  result: >
+    ✅ 已完成（2026-09-08，云端 5000 步短程、从零随机初始化 seed 42）：best val @5000 步
+    （nats，webnovel_v2 评估空间）relu 3.695 / gelu 3.688 / swiglu 3.655 → SwiGLU 胜出
+    （比 relu 好 0.040 nats，领先从 step 1000 起建立、全程一致）→ 已把默认 FFN 从 relu
+    改成 swiglu（DEFAULT_FF_TYPE = 'swiglu'，relu/gelu 保留可回退）。
+    方法学口径：relu↔gelu 严格单变量（同 seed 初始化逐位一致）；swiglu 属 FFN 结构变体
+    （门控结构 + 参数量 +0.018% + 同 seed 不同形 → 起点数值不完全相同），非纯激活单变量。
+    三个变体同条件可比（唯一变量 = ff-type）；与 v3_alpha 正式 run 的绝对 loss 不完全可比
+    （起点/调度细节不同），本实验只用于三变体之间的排序。详情见 docs/EXPERIMENT_LOG.md。
+  run_ids:
+    - v3_ffn_relu_shortrun
+    - v3_ffn_gelu_shortrun
+    - v3_ffn_swiglu_shortrun
+
+# ---------- 模型（与 v3_alpha 完全一致，唯一变量 = FFN） ----------
+model:
+  n_layer: 12
+  n_embd: 576
+  n_head: 9
+  block_size: 512
+  vocab_size: 6144
+  tie_embeddings: true
+  dropout: 0.1
+  position_encoding: rope
+  ffn:
+    relu:   {hidden: 2304, layer_params: 2657088}   # 4d
+    gelu:   {hidden: 2304, layer_params: 2657088}   # 4d（与 relu 逐位一致）
+    swiglu: {hidden: 1536, layer_params: 2657856}   # 8d/3 对齐 32 → 参数 +0.036%
+  total_params:
+    relu: 51411840
+    gelu: 51411840
+    swiglu: 51421056        # +0.018% vs 基线
+
+# ---------- 数据（与 v3_alpha 同一份 shard0，缓存命中） ----------
+data:
+  tokens: 163_840_000     # 5000 步 × batch64 × block512
+  mode: pack
+  version: webnovel_v2
+  train_txt: /root/autodl-tmp/data/train_webnovel_v2.txt
+  val_txt: /root/autodl-tmp/data/val_webnovel_v2.txt
+  cache_dir: /root/autodl-tmp/data
+  tokens_sample: 4000000
+
+# ---------- 训练（三个变体逐项相同） ----------
+training:
+  batch_size: 64
+  tokens_per_step: 32768
+  lr: 8e-4
+  lr_scheme: cosine           # warmup 1000 → min 5e-5（cosine，非恒温）
+  min_lr_ratio: 0.0625        # → min = 8e-4 × 0.0625 = 5e-5
+  warmup_steps: 1000
+  max_steps: 5000
+  epochs: 1
+  weight_decay: 0.05
+  grad_clip: 1.0
+  precision: fp16
+  compile: true
+  seed: 42                    # 数据流一致
+  val_every: 1000             # → val@1000/2000/3000/4000/5000
+  patience: 99                # 短程不早停
+  eval_batches: 100
+  # 从零随机初始化（seed 42）：三个变体均不加载 checkpoint，
+  # 无 --init-from / --init-optimizer（唯一变量 = --ff-type）
+
+# ---------- 运行时 ----------
+runtime:
+  out_dir: /root/result_ffn_{relu,gelu,swiglu}
+  log_dir: /root/log
+  device: cuda                # AutoDL 4090
+  encode_workers: 16
+  num_workers: 8
+
+# =====================================================================
+# 等价训练命令（launcher: scratch/run_ffn_scratch_cloud.sh，从零随机初始化）
+# =====================================================================
+# for FF in relu gelu swiglu; do
+#   python -u train/train.py \
+#     --train-txt /root/autodl-tmp/data/train_webnovel_v2.txt \
+#     --val-txt /root/autodl-tmp/data/val_webnovel_v2.txt \
+#     --sample-mode pack --batch-size 64 --block-size 512 \
+#     --n-layer 12 --n-head 9 --n-embd 576 \
+#     --vocab-size 6144 --tie-embeddings --tokens-sample 4000000 \
+#     --bpe-trainer fast --cache-format shards \
+#     --lr 8e-4 --min-lr-ratio 0.0625 --warmup-steps 1000 --weight-decay 0.05 \
+#     --lr-scheme cosine --dropout 0.1 --precision fp16 \
+#     --epochs 1 --max-steps 5000 --val-every 1000 --patience 99 --eval-batches 100 \
+#     --encode-workers 16 --position-encoding rope --seed 42 --compile \
+#     --ff-type $FF \
+#     --out-dir /root/result_ffn_$FF \
+#     --cache-dir /root/autodl-tmp/data --log-dir /root/log
+# done
+
+# =====================================================================
+# 结果（2026-09-08 云端 5000 步短程完成；best val @5000 步，单位 nats，
+#        webnovel_v2 评估空间；对照条件 = 同数据 shard0 / 同 seed 42 /
+#        从零随机初始化 / cosine lr 8e-4（warmup 1000 → min 5e-5）/ 5000 步，
+#        见上方 model/data/training 节；唯一变量 = --ff-type）
+# 排名 | 变体   | FFN 层参数 | 总参数    | best val @5000 步 | 差值（相对 swiglu）
+# -----|--------|-----------|-----------|-------------------|------------------
+#   1（胜出）| swiglu | 2,657,856 | 51,421,056 | 3.655 | —
+#   2      | gelu   | 2,657,088 | 51,411,840 | 3.688 | +0.033
+#   3      | relu   | 2,657,088 | 51,411,840 | 3.695 | +0.040
+# → SwiGLU 微弱胜出（比 relu 好 0.040 nats，领先从 step 1000 起建立、全程一致）
+#   → 已把默认 FFN 从 relu 改成 swiglu（relu/gelu 保留可回退）。
+# 方法学口径：relu↔gelu 严格单变量（参数名/形状/同 seed 初始化逐位一致）；
+# swiglu 属 FFN 结构变体（门控结构 + 参数量 +0.018% + 同 seed 不同形 → 起点数值
+# 不完全相同），非纯激活单变量。三个变体同条件可比；与 v3_alpha 正式 run 的绝对
+# loss 不完全可比（起点/调度细节不同），本实验只用于三变体之间的排序。

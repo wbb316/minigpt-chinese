@@ -32,15 +32,90 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, start:start + x.size(1)]
 
 
-class FeedForward(nn.Module):
-    def __init__(self, dim:int, dropout: float = 0.0):
-        super().__init__()
-        self.fc1=nn.Linear(dim, 4*dim)
-        self.dropout = nn.Dropout(dropout)
-        self.fc2=nn.Linear(4*dim, dim)
+# ---------------------------------------------------------------------------
+# FFN 变体（v3 FFN 优化实验，2026-09-08）
+#
+#   relu   : Linear(dim→4d) → ReLU   → Linear(4d→dim)      ← v3_alpha 原实现（保留可回退）
+#   gelu   : Linear(dim→4d) → GELU   → Linear(4d→dim)      ← 第一阶段：只换激活
+#   swiglu : gate_proj/up_proj(dim→h) → silu(gate)*up → down_proj(h→dim)
+#            ← 第二阶段：结构变化，h 重新设计使参数量对齐 4d（见 swiglu_hidden）
+#
+# 默认值 = DEFAULT_FF_TYPE（2026-09-08 起为 'swiglu'：5000 步短程对照胜出，见
+# docs/EXPERIMENT_LOG.md「v3 FFN 变体」；relu/gelu 保留可回退）。
+#
+# 约束（对照实验公平性）：
+#   - relu/gelu 的 module 名与参数名与 v3_alpha 完全一致（fc1/fc2）→ 旧 checkpoint
+#     可直接 load，单变量只有激活函数。
+#   - swiglu 的参数量与 relu 版对齐（dim=576 时 h=1536：FFN 层 +0.036%，
+#     全模型 +0.018%）→ 不因参数增加而获得不公平优势。
+# ---------------------------------------------------------------------------
 
-    def forward(self, x : torch.Tensor) -> torch.Tensor:
-        x=self.fc1(x)
-        x=torch.relu(x)
-        x=self.dropout(x)
+FF_TYPES = ('relu', 'gelu', 'swiglu')
+DEFAULT_FF_TYPE = 'swiglu'
+
+
+def swiglu_hidden(dim: int, round_to: int = 0) -> int:
+    """解 SwiGLU 的中间维 h，使参数量 ≈ 原 FFN 的 4d。
+
+    原 FFN 参数量 = 2·4d² + 4d（fc1/fc2 权重 + 两个 bias）
+    SwiGLU 参数量 = 3·h·d + h + 3d（gate/up/down 权重 + 三个 bias）
+
+    解 3hd ≈ 8d² → h ≈ 8d/3 = 2.667d。
+
+    对齐（round_to）：
+      - 0（默认）= 自适应：8d/3 ≥ 512 时对齐到 32，更小的 dim 对齐到 8
+        （对齐粒度只为 kernel/访存友好；granularity 越小参数量越贴，实测
+        dim=576 → h=1536，FFN 层参数差仅 +0.036%）。
+      - 指定值：按该粒度对齐；round_to=1 取最近整数（参数差最小）。
+    """
+    h = 8.0 * dim / 3.0
+    r = int(round_to)
+    if r <= 0:
+        r = 32 if h >= 512 else 8
+    return max(r, int(round(h / r) * r))
+
+
+class FeedForward(nn.Module):
+    """可切换 FFN：ff_type ∈ {'relu', 'gelu', 'swiglu'}，默认 DEFAULT_FF_TYPE（swiglu）。
+
+    - relu/gelu：保持原 4d 中间维与 fc1/fc2 参数名 → 与 v3_alpha checkpoint 兼容。
+    - swiglu：SwiGLU 门控结构；ff_hidden 缺省按参数量对齐自动求解。
+    """
+
+    def __init__(self, dim: int, dropout: float = 0.0,
+                 ff_type: str = DEFAULT_FF_TYPE, ff_hidden: int | None = None):
+        super().__init__()
+        if ff_type not in FF_TYPES:
+            raise ValueError(f'ff_type 仅支持 {FF_TYPES}，得到 {ff_type!r}')
+        self.dim = dim
+        self.ff_type = ff_type
+        self.dropout = nn.Dropout(dropout)
+        if ff_type == 'swiglu':
+            self.hidden = int(ff_hidden) if ff_hidden else swiglu_hidden(dim)
+            # 原实现：fc1 = Linear(dim, 4*dim)。SwiGLU 的两路上投影参数形状一致。
+            self.gate_proj = nn.Linear(dim, self.hidden)
+            self.up_proj = nn.Linear(dim, self.hidden)
+            self.down_proj = nn.Linear(self.hidden, dim)
+        else:
+            self.hidden = 4 * dim
+            # ★ v3_alpha 原 FFN 实现（参数名/形状不变，勿改）
+            self.fc1 = nn.Linear(dim, 4 * dim)
+            self.fc2 = nn.Linear(4 * dim, dim)
+
+    # ---- 供 GPT-2 残差缩放 init 使用：返回残差分支末端的输出投影权重 ----
+    def out_proj_weight(self) -> torch.Tensor:
+        return self.fc2.weight if self.ff_type != 'swiglu' else self.down_proj.weight
+
+    def param_count(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.ff_type == 'swiglu':
+            # silu(gate) * up → down（门控：gate 决定放行多少，up 提供内容）
+            return self.down_proj(
+                self.dropout(torch.nn.functional.silu(self.gate_proj(x))
+                             * self.up_proj(x)))
+        x = self.fc1(x)
+        x = torch.nn.functional.gelu(x) if self.ff_type == 'gelu' else torch.relu(x)
+        x = self.dropout(x)
         return self.fc2(x)

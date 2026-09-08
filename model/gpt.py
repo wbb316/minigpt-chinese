@@ -2,17 +2,20 @@ import math
 
 import torch
 import torch.nn as nn
-from model.layers import LayerNorm, PositionalEncoding, FeedForward
+from model.layers import (LayerNorm, PositionalEncoding, FeedForward, FF_TYPES,
+                          DEFAULT_FF_TYPE)
 from model.attention import MultiHeadAttention
 
 class Block(nn.Module):
-    def __init__(self, dim, n_head, dropout=0.0, rope=None):
+    def __init__(self, dim, n_head, dropout=0.0, rope=None,
+                 ff_type=DEFAULT_FF_TYPE, ff_hidden=None):
         super().__init__()
         self.ln1 = LayerNorm(dim)
         self.attn = MultiHeadAttention(dim, n_head, dropout=dropout,
                                        rope=rope)   # ★ 传 dropout / rope
         self.ln2 = LayerNorm(dim)
-        self.ff = FeedForward(dim, dropout=dropout)                  # ★ FFN 也加 dropout
+        self.ff = FeedForward(dim, dropout=dropout, ff_type=ff_type,
+                              ff_hidden=ff_hidden)                   # ★ FFN 变体可切换
 
     def forward(self, x :torch.Tensor, past_kv=None, return_kv=False):
         """past_kv: 该层缓存的 (k, v)；return_kv=True 或给了 past_kv 时返回 (x, 新kv)。"""
@@ -29,9 +32,18 @@ class GPT(nn.Module):
     def __init__(self, vocab_size: int, n_layer: int, n_head: int,
                  n_embd: int, block_size: int, dropout: float = 0.0,
                  tie_embeddings: bool = False,
-                 position_encoding: str = 'rope'):
+                 position_encoding: str = 'rope',
+                 ff_type: str = DEFAULT_FF_TYPE, ff_hidden: int | None = None):
         """position_encoding: 'rope'(默认——2026-09-06 短训对比胜出) |
-        'sinusoidal'（旧实现，复现旧模型用）。"""
+        'sinusoidal'（旧实现，复现旧模型用）。
+
+        ff_type: 'swiglu'（默认，2026-09-08 短程对照胜出）| 'relu'（v3_alpha 原 FFN，
+        可回退）| 'gelu'；ff_hidden: 仅 swiglu 用，缺省按参数量对齐 4d 自动求解。
+
+        注意：加载旧 checkpoint（v3_alpha / v2 系列，FFN=ReLU）时，推理侧
+        （generate.py / app/server.py / visualize_attention.py）会从 state_dict
+        自动检测 ff_type，不受本默认值影响。
+        """
         super().__init__()
         self.block_size = block_size
         self.vocab_size = vocab_size
@@ -40,6 +52,9 @@ class GPT(nn.Module):
         assert position_encoding in ('sinusoidal', 'rope'), \
             f'position_encoding 仅支持 sinusoidal|rope，得到 {position_encoding}'
         self.position_encoding = position_encoding
+        if ff_type not in FF_TYPES:
+            raise ValueError(f'ff_type 仅支持 {FF_TYPES}，得到 {ff_type!r}')
+        self.ff_type = ff_type
         self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
         self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
@@ -51,8 +66,9 @@ class GPT(nn.Module):
                                    max_seq_len=block_size)
             self.rope = rope
         self.blocks = nn.ModuleList(
-            [Block(n_embd, n_head, dropout=dropout, rope=rope)
-             for _ in range(n_layer)])   # ★ 传 dropout
+            [Block(n_embd, n_head, dropout=dropout, rope=rope,
+                   ff_type=ff_type, ff_hidden=ff_hidden)
+             for _ in range(n_layer)])   # ★ 传 dropout / FFN 变体
         self.ln = LayerNorm(n_embd)   # 用我们自己写的 LayerNorm
         self.head = nn.Linear(n_embd, vocab_size)
         if tie_embeddings:
@@ -69,7 +85,9 @@ class GPT(nn.Module):
         for blk in self.blocks:      # GPT-2 residual scaled init
             nn.init.normal_(blk.attn.out_proj.weight, mean=0.0,
                             std=0.02 / math.sqrt(2.0 * n_layer))
-            nn.init.normal_(blk.ff.fc2.weight, mean=0.0,
+            # 残差分支输出投影：relu/gelu = fc2，swiglu = down_proj
+            # （SwiGLU 论文同样只对输出投影做 1/sqrt(2N) 缩放）
+            nn.init.normal_(blk.ff.out_proj_weight(), mean=0.0,
                             std=0.02 / math.sqrt(2.0 * n_layer))
 
     def _init_weights(self, module):

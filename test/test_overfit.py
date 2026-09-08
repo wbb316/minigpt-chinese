@@ -12,7 +12,9 @@ def train_step(model, optimizer, inputs, targets):
 
 def test_overfit_small_data():
     torch.manual_seed(42)
-    gpt=GPT(vocab_size=16,n_layer=2,n_head=2,n_embd=32,block_size=32)
+    # 通用「模型能否过拟合」冒烟，与 FFN 无关：显式固定 ff_type，避免默认值变更
+    # 改变训练动力学导致断言漂移（FFN 变体各有 test_ffn.py 专项覆盖）
+    gpt=GPT(vocab_size=16,n_layer=2,n_head=2,n_embd=32,block_size=32,ff_type='relu')
     optimizer=torch.optim.Adam(gpt.parameters(),lr=1e-3)
     seq=torch.randint(0,16,(8,32))
     input,target=seq[:,:-1],seq[:,1:]

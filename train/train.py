@@ -42,6 +42,8 @@ from data.tokenizer import BPETokenizer, EOS_ID  # noqa: E402
 from data.dataset import TextDataset, PackedDataset   # noqa: E402
 from data.token_cache import encode_to_cache, ShardMemmap  # noqa: E402
 from model.gpt import GPT                     # noqa: E402
+from model.layers import swiglu_hidden, FF_TYPES, DEFAULT_FF_TYPE   # noqa: E402
+from model.ffn_adapter import adapt_state_dict     # noqa: E402
 
 
 def resolve(p):
@@ -147,6 +149,27 @@ def main():
     parser.add_argument('--tie-embeddings', action=argparse.BooleanOptionalAction,
                         default=True,
                         help='输入/输出嵌入共享权重（大词表必备，防嵌入层吃掉过多参数；--no-tie-embeddings 关闭）')
+    # FFN 变体（v3 FFN 优化实验；默认 swiglu = 2026-09-08 短程对照胜出）
+    parser.add_argument('--ff-type', default=DEFAULT_FF_TYPE,
+                        choices=list(FF_TYPES),
+                        help='FFN 结构/激活：swiglu=门控结构 gate/up/down（默认，'
+                             '5000 步短程对照胜出，参数量对齐 4d）；'
+                             'relu=原 v3_alpha 实现（可回退）；'
+                             'gelu=仅替换激活（参数名/形状与 relu 完全一致）')
+    parser.add_argument('--ff-hidden', type=int, default=0,
+                        help='仅 swiglu 生效的中间维（0=按参数量对齐 4d 自动求解：'
+                             'h ≈ 8d/3；dim=576 → 1536，FFN 层参数差 +0.036%%）')
+    parser.add_argument('--ff-hidden-round', type=int, default=0,
+                        help='swiglu 自动求解 h 时的对齐粒度（0=自适应：h≥512 对齐 32，'
+                             '否则 8；1=最近整数，参数差最小）')
+    parser.add_argument('--init-from', default='',
+                        help='只加载模型权重作为起点（优化器/scheduler 全新），'
+                             '用于 FFN 变体对照：三个变体都从同一 checkpoint 出发。'
+                             'relu↔gelu 直接加载；relu↔swiglu 由 ffn_adapter 改写权重')
+    parser.add_argument('--init-optimizer', action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help='--init-from 时是否同时继承该 checkpoint 的优化器/scaler 状态'
+                             '（默认否：起点更干净；开则动量也延续）')
     # 优化
     parser.add_argument('--batch-size', type=int, default=512)
     parser.add_argument('--lr', type=float, default=8e-4)
@@ -195,6 +218,9 @@ def main():
                              '数据流一致）。默认 None = 不固定（原行为）')
     args = parser.parse_args()
 
+    if args.ff_hidden and args.ff_type != 'swiglu':
+        parser.error('--ff-hidden 仅对 --ff-type swiglu 有效')
+
     if args.seed is not None:
         import random as _random
         import numpy as _np
@@ -206,6 +232,8 @@ def main():
         print(f'随机种子已固定: {args.seed}')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    import time as _time
+    _run_t0 = _time.perf_counter()          # run 级墙钟（吞吐汇总用）
     use_cuda = torch.cuda.is_available()
     use_amp = use_cuda                                  # autocast 仅在 CUDA 启用
     amp_dtype = torch.bfloat16 if args.precision == 'bf16' else torch.float16
@@ -312,17 +340,52 @@ def main():
     val_eval_loader = make_eval_loader(val_ds, args.eval_batches)
 
     # ---------- 模型 ----------
+    ff_hidden = args.ff_hidden or (swiglu_hidden(args.n_embd, args.ff_hidden_round)
+                                   if args.ff_type == 'swiglu' else 0)
     gpt = GPT(vocab_size=vocab_size, block_size=args.block_size, n_layer=args.n_layer,
               n_head=args.n_head, n_embd=args.n_embd, dropout=args.dropout,
               tie_embeddings=args.tie_embeddings,
-              position_encoding=args.position_encoding)
+              position_encoding=args.position_encoding,
+              ff_type=args.ff_type, ff_hidden=ff_hidden or None)
     gpt = gpt.to(device)
     raw_gpt = gpt                    # compile 前的原始模块：state_dict 无 _orig_mod. 前缀，
     #                                  resume 加载与保存都走它（compile 包装只用于前向加速）
     n_params = gpt.get_num_params()
     print(f'位置编码: {args.position_encoding}')
+    print(f'FFN: {args.ff_type}'
+          + (f'（中间维 h={ff_hidden}，4d={4 * args.n_embd}，'
+             f'层参数 {gpt.blocks[0].ff.param_count():,}）'
+             if args.ff_type == 'swiglu' else
+             f'（中间维 {4 * args.n_embd}，层参数 {gpt.blocks[0].ff.param_count():,}）'))
     print(f'GPT 参数量: {n_params:,}'
           + ('（含 tie_embeddings，已去重）' if args.tie_embeddings else ''))
+
+    # ---------- FFN 变体起点：从同一 checkpoint 加载权重（对照实验） ----------
+    # 与 --resume 的区别：--init-from 只拿模型权重当起点，优化器/scheduler 全新，
+    # 不继承 step/epoch（默认）；三个 FFN 变体据此共享同一份预训练参数。
+    init_path = resolve(args.init_from) if args.init_from else None
+    init_meta = None
+    if init_path:
+        if not os.path.exists(init_path):
+            raise FileNotFoundError(f'--init-from 文件不存在: {init_path}')
+        ck = torch.load(init_path, map_location=device, weights_only=True)
+        sd = ck.get('model', ck) if isinstance(ck, dict) else ck
+        sd, rep = adapt_state_dict(sd, raw_gpt)
+        missing, unexpected = raw_gpt.load_state_dict(sd, strict=False)
+        # rope.cos_cached 是注册 buffer：老存档可能没有 → 不算异常
+        missing = [k for k in missing if not k.endswith('cos_cached')]
+        if missing or unexpected:
+            print(f'⚠️ --init-from 非严格加载: missing={missing[:6]}'
+                  f'{"..." if len(missing) > 6 else ""} '
+                  f'unexpected={unexpected[:6]}{"..." if len(unexpected) > 6 else ""}')
+        else:
+            print(f'📥 --init-from: 已从 {init_path} 加载全部权重'
+                  f'（FFN {rep["src_ff"]} → {rep["dst_ff"]}）')
+        if args.init_optimizer:
+            if 'optimizer' not in ck:
+                print('⚠️ --init-optimizer: 该 checkpoint 无 optimizer 状态，跳过')
+            else:
+                init_meta = ck      # 优化器建好后加载（见下方 optimizer 段）
 
     if args.compile:
         if use_cuda:
@@ -343,6 +406,14 @@ def main():
             optimizer = torch.optim.AdamW(dedupe_params(gpt), **opt_kwargs)
     else:
         optimizer = torch.optim.AdamW(dedupe_params(gpt), **opt_kwargs)
+
+    # --init-from + --init-optimizer：继承起点 checkpoint 的优化器动量（可选）
+    if init_meta is not None:
+        try:
+            optimizer.load_state_dict(init_meta['optimizer'])
+            print('📥 --init-optimizer: 已继承起点 checkpoint 的优化器状态')
+        except Exception as e:
+            print(f'⚠️ --init-optimizer 加载失败（{e}）→ 优化器保持全新')
 
     # ---------- LR 调度（cosine / const 恒温续训） ----------
     # cosine: warmup + cosine 衰减到 max_lr×min_ratio（默认路径，从头训练）
@@ -432,6 +503,12 @@ def main():
         f'  tie_embeddings:   {args.tie_embeddings}',
         f'  dropout:          {args.dropout}',
         f'  parameters:       {n_params:,}',
+        f'  ff_type:          {args.ff_type}',
+        f'  ff_hidden:        {ff_hidden if args.ff_type == "swiglu" else 4 * args.n_embd}'
+        f'{"" if args.ff_type == "swiglu" else " (=4*n_embd)"}',
+        f'  ff_layer_params:  {gpt.blocks[0].ff.param_count():,}',
+        f'  init_from:        {init_path or "(none: 从零 GPT-2 init)"}',
+        f'  init_optimizer:   {args.init_optimizer}',
         'data:',
         f'  train_tokens:     {len(train_tokens):,}',
         f'  val_tokens:       {len(val_tokens):,}',
@@ -460,7 +537,6 @@ def main():
     ]
     for cl in config_lines:
         print(cl)
-    import time as _time
     _cfg_path = os.path.join(resolve(args.log_dir), 'run_config.txt')
     os.makedirs(os.path.dirname(_cfg_path), exist_ok=True)
     with open(_cfg_path, 'a', encoding='utf-8') as f:
@@ -538,11 +614,12 @@ def main():
         print(f'📈 验证历史将记录到: {val_csv_path}')
 
     # ---------- step 级历史 CSV（每步一行: tokens_seen 用于跨 run 公平比较） ----------
-    # 列: step,epoch,tokens_seen,train_loss(EMA),val_loss(验证步才有),lr,time
+    # 列: step,epoch,tokens_seen,train_loss(EMA),val_loss(验证步才有),lr,tokens_per_sec,time
     # tokens_seen = 全局累计看到的 token 数(含 resume 前的), 与 batch/epoch 无关,
     #   以后比较 400M vs 1B tokens / 不同 batch 都看这一列。
+    # tokens_per_sec = 自上次落盘以来的**实测吞吐**（含验证开销，FFN 变体对比用）。
     step_csv_path = os.path.join(log_dir, f"step_history_{corpus_tag}.csv")
-    step_header = 'step,epoch,tokens_seen,train_loss,val_loss,lr,time'
+    step_header = 'step,epoch,tokens_seen,train_loss,val_loss,lr,tokens_per_sec,time'
     step_csv_new = (not os.path.exists(step_csv_path)
                     or os.path.getsize(step_csv_path) == 0)
     step_fh = open(step_csv_path, 'a', encoding='utf-8')
@@ -550,13 +627,17 @@ def main():
         step_fh.write(step_header + '\n')
     _buf: list[str] = []          # 行缓冲, 攒批落盘
     _last_flush_step = 0
+    _acc_sec = 0.0                # 自上次落盘累计的墙钟时间（训练步）
+    _acc_tok = 0                  # 自上次落盘累计的 token 数
 
     def flush_step_rows():
-        nonlocal _buf, _last_flush_step
+        nonlocal _buf, _last_flush_step, _acc_sec, _acc_tok
         if _buf:
             step_fh.write('\n'.join(_buf) + '\n')
             _buf = []
         _last_flush_step = global_step
+        _acc_sec = 0.0
+        _acc_tok = 0
 
     def append_step_row(train_loss_ema, val_loss=None):
         """每步调一次; val_loss 非 None(验证步) 时带上。
@@ -564,8 +645,9 @@ def main():
         tok = tok_total
         ep = tok / max(1, len(train_tokens))                    # 进度(按 token 计)
         val_s = f'{val_loss:.4f}' if val_loss is not None else ''
+        tps = f'{_acc_tok / _acc_sec:.0f}' if _acc_sec > 0 else ''
         row = (f'{global_step},{ep:.3f},{tok},{train_loss_ema:.4f},{val_s},'
-               f'{scheduler.get_last_lr()[0]:.2e},'
+               f'{scheduler.get_last_lr()[0]:.2e},{tps},'
                f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
         _buf.append(row)
         # 每 25 步 flush 一次
@@ -633,6 +715,7 @@ def main():
         running, steps_here = 0.0, 0
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}', unit='step', ncols=100)
         for x, y in pbar:
+            _t0 = _time.perf_counter()          # 吞吐计时（FFN 变体对比）
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             # zero_grad 放 forward 前 + set_to_none（省 grad buffer 置零 kernel）
@@ -666,6 +749,8 @@ def main():
                 scheduler.step()
                 global_step += 1
                 tok_total += x.numel()       # 精确 token（尾批按实际 numel，§D）
+                _acc_sec += _time.perf_counter() - _t0
+                _acc_tok += x.numel()
                 # ---- 采样记录（P1，--log-every）：每 N 步一次 loss.item()
                 #      GPU→CPU 同步 + EMA/tqdm/step 行；其余步零同步 ----
                 if global_step % args.log_every == 0:
@@ -709,6 +794,17 @@ def main():
     tqdm.write(f'📈 step 历史: {step_csv_path}')
     tqdm.write(f'📊 tokens_seen 合计: {tok_total:,.0f}'
                + (f'（AMP skipped {amp_skip_steps} 步）' if amp_skip_steps else ''))
+    # ---- FFN 变体对比用：吞吐 + 显存峰值（run 级汇总，直接抄进对比表） ----
+    _wall = _time.perf_counter() - _run_t0
+    _steps_done = global_step - global_step0
+    if _steps_done > 0:
+        tqdm.write(f'📊 吞吐: {_steps_done / _wall:.2f} step/s，'
+                   f'{_steps_done * args.batch_size * args.block_size / _wall:,.0f} '
+                   f'tokens/s（含验证/存盘开销，wall {_wall / 60:.1f} min）')
+    if use_cuda:
+        tqdm.write(f'📊 显存峰值: allocated '
+                   f'{torch.cuda.max_memory_allocated() / 2**20:,.0f} MiB / '
+                   f'reserved {torch.cuda.max_memory_reserved() / 2**20:,.0f} MiB')
 
 
 if __name__ == '__main__':

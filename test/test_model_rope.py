@@ -22,9 +22,12 @@ B = 2
 
 
 def make_gpt(pe):
+    # ★ 本文件只测位置编码（RoPE/sinusoidal），与 FFN 无关：显式固定 ff_type='relu'
+    #   （本文件写就时代 GPT 的默认 FFN），避免以后 DEFAULT_FF_TYPE 变更导致本文件
+    #   的行为/断言随机漂移。
     return GPT(vocab_size=VOCAB, block_size=BLOCK, n_layer=N_LAYER,
                n_head=N_HEAD, n_embd=N_EMBD, dropout=0.0,
-               tie_embeddings=True, position_encoding=pe)
+               tie_embeddings=True, position_encoding=pe, ff_type='relu')
 
 
 def test_rotary_math():
@@ -103,14 +106,22 @@ def test_rope_kv_cache_consistency():
 
 
 def test_rope_short_training():
-    """rope 模式短训练冒烟：loss 下降、无 NaN。"""
+    """rope 模式短训练冒烟：loss 下降、无 NaN。
+
+    根因记录（2026-09-08 默认 FFN relu→swiglu 后本测试失败 6.222→6.258）：
+    原实现每步重新随机 y → 任务不可学习，loss 只在 ln(vocab)≈6.238 附近随机游走，
+    「loss 下降」断言近乎掷硬币（实测 relu/swiglu 各 20 种随机态下均仅 ~15% 下降，
+    与 FFN 类型无关；默认 FFN 变更只是扰动 RNG 使运气翻转）。故把目标 y 固定为
+    只抽一次：模型可真正过拟合 2×32=64 个 token，30 步内 loss 稳健下降 ~3
+    （实测 relu/swiglu 各 20 态全部下降，余量巨大），断言才真实且不随默认值漂移。
+    """
     gpt = make_gpt('rope')
     opt = torch.optim.AdamW(gpt.parameters(), lr=1e-3)
     torch.manual_seed(3)
     x = torch.randint(0, VOCAB, (B, BLOCK))
+    y = torch.randint(0, VOCAB, (B, BLOCK))   # ★ 目标固定（见上：任务须可学习）
     first = None
     for _ in range(30):
-        y = torch.randint(0, VOCAB, (B, BLOCK))
         opt.zero_grad()
         loss = F.cross_entropy(gpt(x).view(-1, VOCAB), y.view(-1))
         if first is None:
