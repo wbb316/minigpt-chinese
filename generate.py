@@ -44,15 +44,19 @@ def load_model(ckpt_path='result/35M参数+998Mtokens/checkpoint_best.pt',
     n_embd = sd['token_emb.weight'].shape[1]
     vocab_size = sd['token_emb.weight'].shape[0]
     block_size = sd['pos_emb.pe'].shape[1]
+    # 自动检测位置编码：state_dict 含 rope buffer → rope；否则 sinusoidal（旧模型）
+    pe = 'rope' if 'rope.cos_cached' in sd else 'sinusoidal'
 
     gpt = GPT(vocab_size=vocab_size, n_layer=n_layer, n_head=n_head,
-              n_embd=n_embd, block_size=block_size)
+              n_embd=n_embd, block_size=block_size,
+              position_encoding=pe)
     gpt.load_state_dict(sd)
     gpt.to(device).eval()
 
     with open(tok, 'rb') as f:
         tokenizer = pickle.load(f)
-    print(f'模型: {n_layer}层/{n_head}头/{n_embd}维, 词表{vocab_size}, block_size={block_size}')
+    print(f'模型: {n_layer}层/{n_head}头/{n_embd}维, 词表{vocab_size}, '
+          f'block_size={block_size}, 位置编码: {pe}')
     return gpt, tokenizer
 
 

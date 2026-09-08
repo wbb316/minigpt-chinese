@@ -62,11 +62,13 @@ def load_model(ckpt_path, tok_path, n_head, device):
     n_embd = sd['token_emb.weight'].shape[1]
     vocab_size = sd['token_emb.weight'].shape[0]
     block_size = sd['pos_emb.pe'].shape[1]  # PositionalEncoding 的 buffer 记录了训练时的序列长度
+    pe = 'rope' if 'rope.cos_cached' in sd else 'sinusoidal'   # 自动检测
     print(f'从 checkpoint 推断架构: {n_layer}层 / {n_head}头 / {n_embd}维, '
-          f'词表{vocab_size}, block_size={block_size}')
+          f'词表{vocab_size}, block_size={block_size}, 位置编码: {pe}')
 
     gpt = GPT(vocab_size=vocab_size, n_layer=n_layer, n_head=n_head,
-              n_embd=n_embd, block_size=block_size)
+              n_embd=n_embd, block_size=block_size,
+              position_encoding=pe)
     gpt.load_state_dict(sd)
     gpt.to(device).eval()
 

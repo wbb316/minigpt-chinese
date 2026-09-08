@@ -39,13 +39,16 @@ def load_model(ckpt_path, tok_path, n_head=8):
     vocab_size = sd['token_emb.weight'].shape[0]
     block_size = sd['pos_emb.pe'].shape[1]          # PositionalEncoding 的 buffer 记录训练长度
     assert n_embd % n_head == 0, f'n_embd={n_embd} 不能被 n_head={n_head} 整除'
+    pe = 'rope' if 'rope.cos_cached' in sd else 'sinusoidal'   # 自动检测
     gpt = GPT(vocab_size=vocab_size, n_layer=n_layer, n_head=n_head,
-              n_embd=n_embd, block_size=block_size)
+              n_embd=n_embd, block_size=block_size,
+              position_encoding=pe)
     gpt.load_state_dict(sd)
     gpt.to(device).eval()
     with open(tok_path, 'rb') as f:
         tokenizer = pickle.load(f)
-    print(f'加载模型: {n_layer}层/{n_head}头/{n_embd}维, 词表{vocab_size}, block_size={block_size}')
+    print(f'加载模型: {n_layer}层/{n_head}头/{n_embd}维, 词表{vocab_size}, '
+          f'block_size={block_size}, 位置编码: {pe}')
     return gpt, tokenizer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
