@@ -127,11 +127,11 @@ def main():
     parser.add_argument('--block-size', type=int, default=256,
                         help='上下文长度；6.4M 模型 128~256 合适，256 提升连贯性（手动注意力 O(T²)，勿再加大）')
     parser.add_argument('--dropout', type=float, default=0.1)
-    parser.add_argument('--position-encoding', default='sinusoidal',
+    parser.add_argument('--position-encoding', default='rope',
                         choices=['sinusoidal', 'rope'],
-                        help='位置编码：sinusoidal=绝对正弦（默认，旧行为不变）；'
-                             'rope=旋转位置编码（Q/K 在 attention 内旋转，'
-                             'embedding 不加位置向量）')
+                        help='位置编码（两套互斥，二选一）：rope=旋转位置编码'
+                             '（默认——2026-09-06 短训对比胜出，val 好 ~1.0 nats）；'
+                             'sinusoidal=绝对正弦（旧模型复现/兼容）')
     parser.add_argument('--tie-embeddings', action=argparse.BooleanOptionalAction,
                         default=True,
                         help='输入/输出嵌入共享权重（大词表必备，防嵌入层吃掉过多参数；--no-tie-embeddings 关闭）')
@@ -371,7 +371,16 @@ def main():
     if resume_path:
         if os.path.exists(resume_path):
             ck = torch.load(resume_path, map_location=device, weights_only=True)
-            gpt.load_state_dict(ck['model'])
+            try:
+                gpt.load_state_dict(ck['model'])
+            except RuntimeError as e:
+                if 'rope' in str(e) or 'Missing key' in str(e):
+                    raise RuntimeError(
+                        'checkpoint 结构与当前 position_encoding 不匹配——'
+                        '该 checkpoint 大概率是 sinusoidal 训练，请加 '
+                        '--position-encoding sinusoidal 复现/续训；'
+                        'rope 模式需用 rope 训练的新 checkpoint。') from e
+                raise
             optimizer.load_state_dict(ck['optimizer'])
             if use_amp and ck.get('scaler') is not None:
                 scaler.load_state_dict(ck['scaler'])

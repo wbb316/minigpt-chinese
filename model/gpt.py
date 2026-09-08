@@ -29,7 +29,9 @@ class GPT(nn.Module):
     def __init__(self, vocab_size: int, n_layer: int, n_head: int,
                  n_embd: int, block_size: int, dropout: float = 0.0,
                  tie_embeddings: bool = False,
-                 position_encoding: str = 'sinusoidal'):
+                 position_encoding: str = 'rope'):
+        """position_encoding: 'rope'(默认——2026-09-06 短训对比胜出) |
+        'sinusoidal'（旧实现，复现旧模型用）。"""
         super().__init__()
         self.block_size = block_size
         self.vocab_size = vocab_size
