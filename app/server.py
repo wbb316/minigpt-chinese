@@ -34,6 +34,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ★ 从 checkpoint 自动推断架构（层数/维度/词表/block_size 随训练配置变，这里不用再改）
 def load_model(ckpt_path, tok_path, n_head=8):
     sd = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+    # torch.compile 训练的 checkpoint 带 '_orig_mod.' 前缀（OptimizedModule 痕迹），
+    # 剥离后所有解析逻辑按无前缀 key 统一处理（旧存档本来无前缀，兼容）
+    if any(k.startswith('_orig_mod.') for k in sd):
+        sd = {k[len('_orig_mod.'):]: v for k, v in sd.items()}
     n_layer = max(int(k.split('.')[1]) for k in sd if k.startswith('blocks.')) + 1
     n_embd = sd['token_emb.weight'].shape[1]
     vocab_size = sd['token_emb.weight'].shape[0]

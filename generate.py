@@ -40,6 +40,10 @@ def load_model(ckpt_path='result/35M参数+998Mtokens/checkpoint_best.pt',
     tok = tok_path if os.path.isabs(tok_path) else os.path.join(ROOT, tok_path)
 
     sd = torch.load(ckpt, map_location='cpu', weights_only=True)
+    # torch.compile 训练的 checkpoint 带 '_orig_mod.' 前缀（OptimizedModule 痕迹），
+    # 剥离后所有解析逻辑按无前缀 key 统一处理（旧存档本来无前缀，兼容）
+    if any(k.startswith('_orig_mod.') for k in sd):
+        sd = {k[len('_orig_mod.'):]: v for k, v in sd.items()}
     n_layer = max(int(k.split('.')[1]) for k in sd if k.startswith('blocks.')) + 1
     n_embd = sd['token_emb.weight'].shape[1]
     vocab_size = sd['token_emb.weight'].shape[0]

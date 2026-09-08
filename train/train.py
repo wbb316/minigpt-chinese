@@ -53,6 +53,18 @@ def dedupe_params(module):
     return list({id(p): p for p in module.parameters()}.values())
 
 
+def _strip_compile_prefix(sd):
+    """torch.compile 训练的 state_dict 带 '_orig_mod.' 前缀（OptimizedModule 痕迹），
+    剥掉前缀以便推理工具/load_state_dict 统一按无前缀 key 解析。
+
+    传入的可能是纯 state_dict 或 {'model': ..., 'optimizer': ...} 完整续训包——
+    dict 本身没有标记，调用方保证传对层级（纯 state_dict 或包里的 model 层）。
+    """
+    if isinstance(sd, dict) and any(k.startswith('_orig_mod.') for k in sd):
+        return {k[len('_orig_mod.'):]: v for k, v in sd.items()}
+    return sd
+
+
 def _opt_step_count(optimizer):
     """optimizer 累计完成的真实参数更新次数（版本无关，从 state['step'] 读）。
 
@@ -305,6 +317,8 @@ def main():
               tie_embeddings=args.tie_embeddings,
               position_encoding=args.position_encoding)
     gpt = gpt.to(device)
+    raw_gpt = gpt                    # compile 前的原始模块：state_dict 无 _orig_mod. 前缀，
+    #                                  resume 加载与保存都走它（compile 包装只用于前向加速）
     n_params = gpt.get_num_params()
     print(f'位置编码: {args.position_encoding}')
     print(f'GPT 参数量: {n_params:,}'
@@ -372,7 +386,9 @@ def main():
         if os.path.exists(resume_path):
             ck = torch.load(resume_path, map_location=device, weights_only=True)
             try:
-                gpt.load_state_dict(ck['model'])
+                # 加载到 raw_gpt（compile 包装与它共享同一份参数）；
+                # _strip_compile_prefix 兼容新 checkpoint（带 _orig_mod. 前缀）与旧的无前缀存档
+                raw_gpt.load_state_dict(_strip_compile_prefix(ck['model']))
             except RuntimeError as e:
                 if 'rope' in str(e) or 'Missing key' in str(e):
                     raise RuntimeError(
@@ -482,7 +498,7 @@ def main():
         """
         if full:
             ne = (epoch + 1) if next_epoch is None else next_epoch
-            torch.save({'model': gpt.state_dict(),
+            torch.save({'model': raw_gpt.state_dict(),   # raw_gpt: 无 _orig_mod. 前缀
                         'optimizer': optimizer.state_dict(),
                         'scaler': scaler.state_dict() if scaler else None,
                         'step': global_step,
@@ -492,7 +508,7 @@ def main():
                         'best_val': best_val,
                         'no_improve': no_improve}, ckpt_path)
         else:
-            torch.save(gpt.state_dict(), ckpt_path)
+            torch.save(raw_gpt.state_dict(), ckpt_path)  # raw_gpt: 无 _orig_mod. 前缀
         with open(tok_path, 'wb') as f:
             pickle.dump(tokenizer, f)
         tqdm.write(f'  💾 已保存 {tag}: {ckpt_path}')
