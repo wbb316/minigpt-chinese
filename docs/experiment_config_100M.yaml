@@ -1,0 +1,125 @@
+# =====================================================================
+# experiment_config_100M.yaml — 100M 参数 + shard1/2 新数据（v3 系列第 2 版）
+# 创建：2026-09-11 ｜ 对应：B 组主线「数据侧真 scaling」
+# 实验 ID：v3_beta_100M_ctx512_2B
+# 说明：train.py 走命令行参数，本文件是"唯一事实来源"，开跑前按文末等价命令逐项核对。
+#       val loss 单位 nats。
+#
+# ⚠️ 非单变量实验：本 run 同时动了 **模型规模(51.4M→101.5M)** 与 **数据(shard0 1B → shard1+2 1.96B)**，
+#    属于「综合升级」性质（同 v2 家族的定义），**不要按单变量标准归因**。
+# ⚠️ 评估空间：本 run 的 val 是 **shard1+2 自己的 val**（新 split）→ **新评估空间**，
+#    其 val 数字**不在 v2/v3 可比链内**，不可与 v3_alpha 3.2097 直接排名。
+# =====================================================================
+
+meta:
+  name: v3_beta_100M_ctx512_2B
+  version: v3                 # v3 = GPT-2 init + RoPE 的模型系列（评估空间本应沿用 v2，但本次换了 split）
+  date: 2026-09-11
+  params_exact: "101,457,280" # 实测（含 tie，已去重）
+  purpose: >
+    数据侧真 scaling：把 v3 系列从 shard0 的 1B token 推到 shard1+2 的 ~1.96B **全新 token**，
+    同时把模型从 51.4M 扩到 101.5M。
+    - 与 v3_alpha 的差异：模型规模（1.97×）、数据（1.95× token，且**完全不同的书**）、
+      FFN（relu → swiglu，依据 FFN 短程对照结论）、vocab（6144 → 8192，依据 vocab LM 短测结论）
+    - 目标：确认 v3 底层（RoPE + GPT-2 init + SwiGLU）在更大规模 + 更多新数据上继续显著下降
+    - 口径：50M/1B 与 100M/1.96B 均约 **19–20 token/参数**，两边都落在 Chinchilla 附近
+
+# ---------- 模型 ----------
+model:
+  n_layer: 16                # 12 → 16（×1.33）
+  n_embd: 704                # 576 → 704（×1.22）；d/L = 44，与 50M 的 48 基本同形
+  n_head: 11                 # head_dim = 704/11 = 64（与 8H/512d、9H/576d 一致，惯例保持）
+  block_size: 512            # 与 v2/v3 全线一致（本轮不引入 ctx 变量）
+  vocab_size: 8192           # 依据 v3_vocab_cmp_lm 短测（bits/char 好 0.92%，10/10 点一致）
+  tie_embeddings: true
+  dropout: 0.1
+  position_encoding: rope
+  ff_type: swiglu            # 默认值；h = 1888（层参数 3,991,936）
+
+# ---------- 数据（shard1 + shard2，全新书） ----------
+data:
+  tokens: ~1.96B             # 单 epoch = 1,962,318,207（实测）
+  mode: pack
+  version: webnovel_v2_shard12
+  source: D:\小说\webnovel\webnovel_{1,2}.jsonl   # 各 ~4.0GB
+  prepare_cmd: python data/prepare_webnovel.py --shards 1 2
+  train_txt: /root/data/train_webnovel_shard12.txt      # 7,355,811,325 字节 / 2,489,862,301 字符
+  val_txt:   /root/data/val_webnovel_shard12.txt        #   861,615,693 字节 /   291,364,644 字符
+  # ⚠️ 语料放**系统盘 /root/data**：AutoDL 克隆只复制系统盘，放数据盘会导致克隆后丢失（已踩过）
+  cache_dir: /root/autodl-tmp/data                      # 缓存 + 编码临时文件放数据盘（不占系统盘）
+  tokens_sample: 4000000
+
+# ---------- 训练 ----------
+training:
+  batch_size: 64             # 与 v3_alpha 相同 → 32768 token/step
+  block_size: 512
+  steps: 59886               # = ceil(1962318207 / 32768)
+  lr: 7e-4                   # 峰值（比 v3_alpha 的 8e-4 低一档；宽度缩放启发式 √(576/704)×8e-4 ≈ 7.2e-4）
+  min_lr: 4.375e-5           # ratio 0.0625 → lr × 0.0625
+  warmup: 2000               # 按 v3_alpha 的 3.3% 比例（1000/30463）折算
+  lr_scheme: cosine
+  epochs: 1                  # 单 epoch = 1.96B token（严格 ~1:19.3 口径）
+  weight_decay: 0.05
+  grad_clip: 1.0
+  val_every: 5000            # 12 个验证点
+  patience: 5                # v3_alpha 用 2，对 6 万步太激进易误早停
+  eval_batches: 100
+  seed: 42
+
+# ---------- 运行时 ----------
+runtime:
+  device: cuda               # AutoDL RTX 4090 D 24GB
+  amp: true                  # fp16 + scaler
+  precision: fp16
+  compile: true              # torch.compile
+  encode_workers: 16
+  num_workers: 8
+  ulimit_n: 65535            # ⚠️ 必须！ShardMemmap 会一次性 memmap 打开**所有**分片，
+                             #    本语料 1660 片 > 容器默认 soft limit 1024 → Too many open files
+  out_dir: /root/result_100m
+  log_dir: /root/log_100m
+  autoshutdown: false        # ⚠️ 实测无效：/usr/bin/shutdown 只 kill supervisord，
+                             #    容器 init 会把它重启 → 实例不会关机。需人工在控制台关机。
+
+# ---------- 实测结果（2026-09-11） ----------
+result:
+  best_val: 3.0610           # @ step 59863（epoch 末验证）
+  train_loss_ema: 3.0780
+  wall_minutes: 265.5        # 4.42 小时
+  throughput: "3.76 step/s, 123,136 tok/s（含验证/存盘）"
+  mem_peak: "allocated 18,403 MiB / reserved 19,846 MiB（上限 24,564）"
+  amp_skipped: 23            # / 59,863 步 = 0.04%
+  tokens_seen: 1961564160
+  val_curve:
+    5000: 3.6336
+    10000: 3.4535
+    15000: 3.3596
+    20000: 3.2999
+    25000: 3.2505
+    30000: 3.2087
+    35000: 3.1706
+    40000: 3.1368
+    45000: 3.1083
+    50000: 3.0846
+    55000: 3.0689
+    59863: 3.0610
+
+# =====================================================================
+# 等价训练命令（开跑前按本文件逐项核对；tokenizer 需先 cp 进 out_dir）
+# ⚠️ 缺 ulimit 会 OSError: [Errno 24] Too many open files（1660 分片）
+# =====================================================================
+# ulimit -n 65535
+# mkdir -p /root/result_100m
+# cp /root/result_vcmp/v8192/tokenizer_v8192_s4000000.pkl /root/result_100m/
+# /root/miniconda3/bin/python -u train/train.py \
+#   --train-txt /root/data/train_webnovel_shard12.txt \
+#   --val-txt   /root/data/val_webnovel_shard12.txt \
+#   --sample-mode pack --batch-size 64 --block-size 512 \
+#   --n-layer 16 --n-head 11 --n-embd 704 \
+#   --vocab-size 8192 --tie-embeddings --tokens-sample 4000000 \
+#   --bpe-trainer fast --cache-format shards \
+#   --lr 7e-4 --min-lr-ratio 0.0625 --warmup-steps 2000 --weight-decay 0.05 \
+#   --epochs 1 --val-every 5000 --patience 5 --eval-batches 100 \
+#   --encode-workers 16 --lr-scheme cosine --position-encoding rope --seed 42 \
+#   --compile \
+#   --out-dir /root/result_100m --cache-dir /root/autodl-tmp/data --log-dir /root/log_100m

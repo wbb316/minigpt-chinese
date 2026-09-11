@@ -3,7 +3,7 @@
 > **规则：修改任何代码前先读本文件**，了解当前阶段、约定与坑点。
 > 训练完成后由助手根据用户口述在 `docs/EXPERIMENT_LOG.md` 追加实验记录。
 > 完整工作流见文末「AI 操作规则 — 标准工作流（最终版）」。
-> 最后更新：2026-09-08
+> 最后更新：2026-09-11
 
 ## 一句话定位
 
@@ -11,6 +11,8 @@
 
 ## 当前阶段
 
+- [x] **★ v3_beta 100M + shard1/2 新数据完成**（2026-09-11，`v3_beta_100M_ctx512_2B`）：**101,457,280**（16L/704d/11H，head_dim 64）/ **1.96B 全新 token**（shard1+2）/ ctx512 / vocab **8192** / FFN **swiglu**，**best val 3.0610** @ step 59863，耗时 **4.42 小时**（3.76 step/s）；**⚠️ 新评估空间**（val 是 shard1+2 自己的 split），**不在 v2/v3 可比链内**，不可与 v3_alpha 3.2097 排名；详见 EXPERIMENT_LOG
+- [x] **★ vocab 消融收官 → 定版 8192**（2026-09-10，`v3_vocab_ablation` + `v3_vocab_cmp_lm`）：tokenizer 侧测 4096/6144/8192（4M 样本，前缀性质截取派生，截取的 6144 与独立训练逐位一致）；LM 短测（各 5000 步、同一份 val）全量 **bits/char 4.1784 vs 4.1398 → 8192 好 0.92%**，**10/10 验证点方向一致** → **vocab 定版 8192**；同时确认 **样本量 4M 足够**（4M→32M 仅 +0.623% 压缩率）；详见 EXPERIMENT_LOG 与 `tokenizer_sample_size_plan.md`
 - [x] **★ v3_alpha 50M（新底层：RoPE + GPT-2 init）完成**（2026-09-08，`v3_alpha_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.2097** @ step 30455（webnovel_v2 评估空间**新 best**；同结构较 v2 50M 3.6154 −0.406 nats，底层双变量升级；详见 EXPERIMENT_LOG）
 - [x] **v2 50M 完成**（2026-09-06，`v2_50M_ctx512_1B`）：51.4M（12L/576d/9H）/ 1B token / ctx512，**best val 3.6154** @ step 30454（已由 v3_alpha 超越，仍为 strict 参数对照基准，详见 EXPERIMENT_LOG）
 - [x] **★ 首个严格可比参数对照成立**：50M@1B(**3.6154**) < 35M@1B(3.7076) < 35M@2B(3.6372) → **参数 scaling 收益 > 重复数据收益**（同 tokenizer/语料/val/batch/LR，仅参数不同）
@@ -25,7 +27,9 @@
 > **分别记录、不要混排**：
 > - Historical best on old evaluation：20M val = 3.636（旧 tokenizer/语料/val 集/ctx256）
 > - Current webnovel_v2 eval space best：**v3_alpha 50M val = 3.2097**（RoPE+GPT-2 init 新底层，ctx512；v2 50M 3.6154 次之）
+> - **★ 新空间（2026-09-11 起）：shard1+2 空间** —— val = shard1+2 自己的 split（**与上面两个空间的 val 集不同，也与 shard0 的 val 不同**）；首个基准点 = **v3_beta 100M val 3.0610**（vocab 8192）
 > - 旧空间与 webnovel_v2 空间处于不同评估空间，**不构成同一排行榜**；v3_alpha 与 v2 系同空间**可比**。
+> - **shard1+2 空间的数字不可与 webnovel_v2 空间排名**（validation split 变化）。三空间各自成链。后续若在 shard1+2 上继续跑，**固定用该 val 集**以形成新的可比链。
 
 ## Current Best Checkpoint
 
@@ -34,7 +38,10 @@
 - **Do not overwrite unless a new experiment improves it.**
 - v2 (35M, 2026-09-06, **Epoch 2**): val **3.6372** / train_eval **3.6063** / gap **0.0310**，**tokenizer/语料不同与 3.636 不可直接比**；checkpoint: `result/35M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_webnovel_v2/`）
 - **v2 (50M, 2026-09-06): val 3.6154** / train_eval 3.5776 / gap 0.0378 —— strict 参数对照基准（sinusoidal+旧 init）；checkpoint: `result/50M参数+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m/`）
-- **★ v3_alpha (50M, 2026-09-08, RoPE+GPT-2 init): val 3.2097** / train_eval 3.1416 / gap 0.0680 —— **webnovel_v2 评估空间当前 best**（同结构同数据较 v2 50M −0.406 nats）；checkpoint: `log/50M参数_v3_alpha+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m_rope/`，下次训练时改名对齐）
+- **★ v3_alpha (50M, 2026-09-08, RoPE+GPT-2 init): val 3.2097** / train_eval 3.1416 / gap 0.0680 —— **webnovel_v2 评估空间当前 best**（同结构同数据较 v2 50M −0.406 nats）；checkpoint: `log/50M参数_v3_alpha+998Mtokens/checkpoint_best.pt`（本地归档；云端 `/root/result_50m_rope/`）
+- **★ v3_beta (100M, 2026-09-11, 16L/704d/11H + vocab 8192): val 3.0610** / train_loss EMA 3.0780 —— **新空间（shard1+2 val）首个基准点**，**与上面所有数字不可排名**；checkpoint: 云端 `/root/result_100m/checkpoint_best.pt`（389MB，**尚未下载到本地**）；日志归档: `log/100M参数_v3_2Btokens/`
+
+> **当前有 3 个互不可比的评估空间**：① 旧空间（tokenizer/语料/val 均不同）② webnovel_v2 空间（shard0 train / shard0 val / vocab6144）③ **shard1+2 空间**（shard1+2 train / shard1+2 val / vocab8192）。跨空间只能看量级趋势，**禁止排名**。
 
 > 最新 ≠ 最好：跑失败/半成品实验时，**不要覆盖 `checkpoint_best.pt`**，也不要以最新 checkpoint 当作最佳结论。
 
@@ -49,6 +56,9 @@
 | v2 Epoch 2 | 35M | 同 E1（const LR 5e-5 恒温续训） | webnovel_v2 shard0（第二遍，累计 19.96 亿） | 3.6372 | 16f0c1a |
 | v2 50M | 51.4M | 12L/9H/576d/bs512/vocab6144/tie（sinusoidal+旧init） | webnovel_v2 shard0 (9.98亿, 单轮) | 3.6154 | fffbffe |
 | **v3_alpha 50M** | 51.4M | 同结构 / **rope + GPT-2 init** / FFN=ReLU / compile | webnovel_v2 shard0 (9.98亿, 单轮) | **3.2097** | 981d35f |
+| **v3_beta 100M** | **101.5M** | **16L/11H/704d** / rope + GPT-2 init / FFN=**swiglu** / vocab **8192** / compile | **shard1+2（1.96B 全新 token，单轮）** | **3.0610** ⚠️新空间 | e22aa33 |
+
+> ⚠️ **v3_beta 那一行不在可比链里**：它的 val 是 shard1+2 自己的 split（新空间），与上表其余各行**不可排名**，列出仅为记录。
 
 > v2/v3 可比链（同评估空间）：**v3_alpha 50M@1B 3.2097** < v2 50M@1B 3.6154 < 35M@2B 3.6372 < 35M@1B 3.7076。
 > v2 50M < 35M 链 = strict 参数对照（仅参数不同）；v3_alpha 与 v2 50M 为**底层双变量升级**（rope+init），单变量贡献由 rope 短训单独支撑（详见 EXPERIMENT_LOG）。
@@ -58,6 +68,10 @@
 
 ## 已验证结论
 
+- **★ vocab 大小：8192 > 6144**（2026-09-10，`v3_vocab_cmp_lm`，各 5000 步、**同一份 val**、同一合并序列截取派生 → 严格单变量）：全量 val @step5000 **bits/char 4.1398 (8192) < 4.1784 (6144)**，**Δ = −0.92%**，**10/10 验证点方向一致**；扣除"同 step 多看 3.40% 文本"后仍 ≈ −0.83%。tokenizer 侧：4096 淘汰（压缩率损失 6.17% 只省 2.3% 参数）；6144→8192 边际收益为第一档的 52.3%。**→ vocab 定版 8192**
+- **★ 方法学：per-token val_loss 跨 vocab 不可比**（同上）：词表越大单 token 信息越少，loss 天然更低——照 per-token 读会得出**完全相反**的结论（3.5999 vs 3.6906 看着 8192 差 2.5%）。跨 vocab 必须比 **bits/char** 或 **bits/byte** = `(val_loss/ln2) / chars_per_token`，chars_per_token 取完整 val 实测值
+- **★ tokenizer 训练样本量：4M 已足够**（2026-09-10，阶段一）：4M→32M（**8× 数据、9.4× 时间**）压缩率只提升 **0.623%**（chars/token 1.2429→1.2507）→ 维持 4M
+- **★ 增加参数 + 数据有效**（2026-09-11，v3_beta）：在**新空间**内，100M/1.96B 的 val 曲线从 3.6336 单调降到 3.0610，12 个验证点无一反弹，gap 仅 0.014→0.032（**未过拟合**，19.4 token/参数 ≈ Chinchilla 最优点）
 - **参数 scaling 收益 > 重复数据收益**：50M@1B(3.6154) < 35M@2B(3.6372) < 35M@1B(3.7076)——本项目首个**同 tokenizer/语料/val/batch/LR 严格可比**结论（2026-09-06）
 - **★ 新底层（RoPE + GPT-2 init）显著有效**（2026-09-08）：v3_alpha 50M(3.2097) < v2 50M(3.6154)，同结构同数据 −0.406 nats；rope 单变量短训独立支撑（−1.0~2.1 nats @ 同 step），GPT-2 init 修复起点 loss（300+ → 正常）
 - **★ FFN：SwiGLU > GELU > ReLU**（2026-09-08，5000 步短程、同 seed / **从零** / cosine 8e-4（warmup 1000 → min 5e-5）、唯一变量 = `--ff-type`）：best val @5000 步 **3.655 / 3.688 / 3.695** nats → swiglu 比 relu 好 **0.040 nats**，微弱胜出（领先从 step 1000 起建立、全程一致）→ **已把默认 FFN 从 relu 改成 swiglu**（relu 保留可回退）；方法学口径：relu↔gelu 严格单变量（参数/形状/同 seed 初始化逐位一致）；swiglu 属「FFN 结构变体」对比（门控结构 + 参数量 +0.018% + 同 seed 不同形 → 起点数值不同），**非纯激活单变量**
@@ -75,16 +89,19 @@
 - v2 E1（3.7076）数值上未破 20M 纪录（3.636），但 **tokenizer/语料不同不可直接比**；同 tokenizer + 同 val 集下的 35M vs 20M 增益仍无可比数据
 - 20M 模型继续堆数据（4.16亿 → 10 亿 token）是否继续降 loss 未验证
 - block 512 相对 256 的长程收益未在同一语料上验证
-- **v3 系列在更大数据（shard1/2 新 token）上是否延续 −0.4 nats 优势**未验证（下一步主线）
-- **FFN 激活能否再降 val → 已对照验证（2026-09-08，5000 步短程）**：**swiglu 3.655 < gelu 3.688 < relu 3.695**，swiglu 比 relu 好 0.040 nats → 已成为默认 FFN；但**长程 / shard1/2 大数据上的收益延续**仍待 v3 正式 run 验证
+- **v3 系列在更大数据（shard1/2 新 token）上是否延续 −0.4 nats 优势** → **已跑（2026-09-11，v3_beta 100M）**，但**因换了 val split 无法与 webnovel_v2 空间排名**；若要严格回答"新数据相对旧数据的增益"，需让两个空间**评在同一份 val 上**（尚未做）
+- **shard1+2 空间尚无可比链**：只有 1 个点（v3_beta 100M 3.0610）。要形成链需在该 val 上再跑至少一个规模
+- **v3_beta 末段下降放缓**（50k→59.9k 仅降 0.024）：是数据不够、参数不够、还是 lr 偏低（7e-4）尚无定论
+- **FFN 激活能否再降 val → 已对照验证（2026-09-08，5000 步短程）**：**swiglu 3.655 < gelu 3.688 < relu 3.695**，swiglu 比 relu 好 0.040 nats → 已成为默认 FFN；v3_beta 100M 正式 run 已用 swiglu（长程收益得到间接支持）
 - 中文生成质量无系统评估，目前仅主观观感
 
 ## 下一阶段计划
 
-1. **v3 系列 + shard1/2 新数据**：~2B 全新 token（webnovel_v2 shard1/2），单轮或按 epoch 规划；重点盯 v3_alpha 底层在新数据上的 scaling 斜率与 gap 走势
-2. 若数据侧显著降 loss → 升级事实表/Status 的可比链；考虑是否回归 35M（成本 ×2/3）做参数 × 数据的交叉验证
-3. 生成质量评估：用 v3_alpha 模型跑一批示例 + 注意力热力图，主观抽检中文续写观感
-4. **v3_beta（FFN 激活变体）— 已完成（2026-09-08）**：从零随机初始化 5000 步短程对照 swiglu 胜出（**3.655 < gelu 3.688 < relu 3.695**，比 relu 好 0.040 nats）→ **已并入主线：默认 FFN = swiglu**（`DEFAULT_FF_TYPE='swiglu'`，relu/gelu 保留可回退）；v3 正式训练（shard1/2 新数据）直接用 swiglu
+1. **★ 定 shard1+2 空间的比较口径（最优先）**：把 v3_alpha 的 checkpoint 也在 shard1+2 的 val 上评一遍（`scratch/eval_val_bits.py --val-txt ...`，两端都换算 bits/char），
+   凑成 2×2 矩阵（两个模型 × 两个 val 集）——**这是唯一能严格回答"数据翻倍 + 参数翻倍"各贡献多少的做法**
+2. **v3_beta 末段放缓的三个候选方向**（择一，勿同时动）：① 数据继续扩（shard3+，cloud 还有 shard3–9）② 参数继续扩 ③ lr 是否偏低（v3_beta 用 7e-4，v3_alpha 用 8e-4）
+3. 生成质量评估：用 v3_beta / v3_alpha 跑一批示例 + 注意力热力图，主观抽检中文续写观感
+4. ~~v3_beta（FFN 激活变体）~~ **已完成（2026-09-08）**：from-scratch 5000 步短程 swiglu 胜出 → 已并入主线；v3_beta 这个 ID 在 2026-09-11 被**复用为 100M 主线 run**（原 FFN 变体的正式 ID 是 `v3_ffn_variants_shortrun`）
 
 ### Scaling 原则（两阶段）
 
@@ -165,12 +182,14 @@ v{版本}_{模型}_ctx{context}_{数据规模}
 **版本号语义（2026-09-08 起明确）**：
 - **v1/v2 = 评估空间代际**：tokenizer/语料/val 集切换（v1 = 百合/轻小说旧空间；v2 = webnovel_v2/v6144/ctx512 空间）
 - **v3 = 50M 新底层实验系列**（2026-09-08 起）：GPT-2 init + RoPE 的模型系列；**评估空间沿用 v2（webnovel_v2/v6144/同 val）** → v3 数字与 v2 系**直接可比**，不可误读为换了语料
-- **v3 内后缀 = 同系列变体序号**（不是成熟度/质量排序）：`v3_alpha` = 系列第 1 版（ReLU FFN）；`v3_beta` = FFN 激活变体（gelu/swiglu；2026-09-08 短程对照已收官，swiglu 胜出并成为默认，见 EXPERIMENT_LOG）
+- **v3 内后缀 = 同系列变体序号**（不是成熟度/质量排序）：`v3_alpha` = 系列第 1 版（50M / shard0 1B / ReLU FFN）；`v3_beta` = 系列第 2 版（**100M / shard1+2 1.96B / SwiGLU / vocab 8192**，2026-09-11）
+  - ⚠️ 注意：FFN 激活消融那次的正式 ID 是 `v3_ffn_variants_shortrun`（**不是** v3_beta）；`v3_beta` 于 2026-09-11 用于 100M 主线 run
 
 示例：
 - `v1_20M_ctx256_400M`（20M 最终版）
 - `v2_35M_ctx512_1B`（v2 综合升级实验）
-- `v3_alpha_50M_ctx512_1B`（v3 系列第 1 版：rope+新init+ReLU，webnovel_v2 空间新 best 3.2097）
+- `v3_alpha_50M_ctx512_1B`（v3 系列第 1 版：rope+新init+ReLU，webnovel_v2 空间 best 3.2097）
+- `v3_beta_100M_ctx512_2B`（v3 系列第 2 版：16L/704d/11H + SwiGLU + vocab8192，**shard1+2 新空间**首点 3.0610）
 
 以下位置**统一使用该 ID**（新建实验时按格式命名）：
 - checkpoint 输出目录

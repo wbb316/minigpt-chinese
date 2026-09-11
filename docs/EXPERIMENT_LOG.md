@@ -221,3 +221,109 @@
 
 - **下一步**：默认 FFN **已是 swiglu**（train `--ff-type` 默认值，无需再显式指定）；后续
   v3 正式训练（**新数据 shard1/2**）将用 swiglu 跑主线。
+
+---
+
+## v3 vocab 消融（tokenizer 侧 + LM 短测）— 完成（2026-09-10）
+
+- **Experiment ID**：`v3_vocab_ablation`（tokenizer 侧）/ `v3_vocab_cmp_lm`（LM 短测）
+- **status**：`complete`（★ 两阶段都收官 → **vocab 定版 8192**）
+- **commit**：`a31072b`（`e22aa33` 之前；本实验未改模型代码）
+- **配置**：`docs/tokenizer_sample_size_plan.md` §10（tokenizer 侧）；LM 短测见下方表
+
+**阶段一（样本量）**：4M / 8M / 16M / 32M 字符，vocab 固定 6144。
+结论：**4M→32M（8× 数据、9.4× 时间）压缩率只提升 0.623%**（chars/token 1.2429 → 1.2507）→
+性价比极低，**维持 4M 训练样本**。详见 `tokenizer_sample_size_plan.md` §8。
+
+**阶段二（vocab 大小，tokenizer 侧）**：4M 样本固定，vocab = 4096 / 6144 / 8192（12288 按指示取消）。
+> 方法要点：BPE 顺序贪心合并 → 第 k 个 merge 的 id = `len(vocab)`（258 起连续分配），
+> 因此**大词表截断 == 独立训练的小词表**（前缀性质）。只独立训练 8192（722.7s），
+> 4096/6144 由它截取派生；**截取的 6144 与阶段一独立训练的 `tok_4M.pkl` 逐位一致**（已验证），
+> 故三档唯一变量就是 vocab 大小，且排除了多次独立训练的合并路径随机差异。
+
+| vocab | chars/token (B2) | 相对 4096 | 嵌入参数 | 词表利用率 |
+|---|---|---|---|---|
+| 4096 | 1.1662 | — | 2.36M | 91.4% |
+| 6144 | 1.2429 | −6.17% | 3.54M | 88.6% |
+| 8192 | 1.2872 | −9.40% | 4.72M | 85.0% |
+
+边际收益（每 +2048 vocab）：4096→6144 省 21,168 token（−6.17%）；6144→8192 省 11,073（−3.44%，为第一档的 52.3%）。
+**长尾分析**（40M 字符 val，外推 1B token 预算）：即使 8192，预计出现 <100 次的 token 仅 70 个、占训练槽位 ≈0.00%
+→ **长尾不构成否决理由**；也**修正了阶段一的判断**（"6144 有 11.4% 冗余"是 400K 字符小样本的假象）。
+
+**阶段三（LM 短测，唯一能定案的证据）**：intrinsic 指标无法裁定 6144 vs 8192 → 各跑 5000 步真实训练。
+
+| 项 | 设定 |
+|---|---|
+| 模型 | 12L/576d/9H / swiglu / tie / rope / dropout 0.1 / block 512 |
+| 数据 | shard0（train_webnovel_v2.txt），val = `val_webnovel_v2.txt`（**两边同一份**） |
+| 训练 | batch 64 / lr 8e-4 / warmup 1000 / cosine（total_steps 维持 30463）/ `--max-steps 5050` / seed 42 / fp16+compile |
+| 参数量 | 51,421,056 (v6144) / 52,602,752 (v8192) |
+
+**全量 val（143,893,657 字符、全部 block）@ step 5000**：
+
+| arm | vocab | val_loss (nats/tok) | chars/token | **bits/char** | bits/byte |
+|---|---|---|---|---|---|
+| v6144 | 6144 | 3.5999 | 1.2429 | 4.1784 | 1.4146 |
+| v8192 | 8192 | 3.6906 | 1.2861 | **4.1398** | **1.4016** |
+
+→ **Δ bits/char = −0.0386（−0.92%）**，Δ bits/byte = −0.0131（−0.92%）→ **8192 更好**。
+**10/10 个验证点全部偏向 8192**（−0.99% ~ −1.49%，全程一致）；扣除"同 step 下 8192 多看 3.40% 文本"
+的贡献后仍有 ≈ **−0.83%**。
+
+- **⚠️ 方法学要点（本次最大产出之一）**：**per-token val_loss 跨 vocab 不可比**——
+  词表越大单 token 承载信息越少，loss 天然更低。照 per-token 读会得出**完全相反**的结论
+  （3.5999 vs 3.6906 看着 8192 差 2.5%）。必须归一化到 **bits/char 或 bits/byte**：
+  `bits/char = (val_loss_nats / ln2) / chars_per_token`，其中 chars_per_token 取**完整 val 语料**实测值。
+- **结论**：**vocab 定版 8192**；100M 主线 run 采用 8192。
+- **产物**：`tok_exp/tok/tok_v{4096,6144,8192}*.pkl`、`tok_exp/eval_vocab.json`、`tok_exp/tail_vocab.json`、
+  `tok_exp/tok_vocab_summary.png`、`log/vocab对照6144vs8192/`（两臂 train.log / step/val CSV / eval JSON / 汇总图）
+
+---
+
+## v3_beta 100M + shard1/2 新数据（2B）— 完成（2026-09-11）
+
+- **Experiment ID**：`v3_beta_100M_ctx512_2B`
+- **status**：`complete`
+- **commit**：`e22aa33`（本 run **未改任何模型代码**，纯配置 + 数据）
+- **配置**：`docs/experiment_config_100M.yaml` ｜ launcher：`scratch/cloud_run_100m.sh`
+
+| 项 | 值 |
+|---|---|
+| 模型 | **16L / 704d / 11H**（head_dim 64）/ swiglu h=1888 / tie / rope / dropout 0.1 |
+| 参数量 | **101,457,280**（实测；vocab 8192） |
+| 数据 | **shard1+2**（`webnovel_{1,2}.jsonl` 清洗）→ train **2,489,862,301 字符 = 1,962,318,207 token**；val 291,364,644 字符 = 228,601,630 token |
+| 训练 | batch 64 / block 512 / **lr 7e-4** / warmup 2000 / cosine（min 4.375e-5）/ wd 0.05 / grad-clip 1.0 / **epochs 1** / val_every 5000 / seed 42 / fp16+compile |
+| 步数 | 59,886（完成 59,863，epoch 1.000） |
+| **best val** | **3.0610** @ step 59863（epoch 末验证）；train_loss EMA 3.0780 |
+| 耗时 | **265.5 分钟 = 4.42 小时** |
+| 吞吐 | 3.76 step/s，123,136 tok/s（含验证/存盘） |
+| 显存峰值 | allocated **18,403** / reserved **19,846** MiB（上限 24,564） |
+| AMP skip | 23 / 59,863 步（0.04%，无害） |
+
+**12 个验证点**（单调下降，无平台期/反弹）：
+
+| step | 5k | 10k | 15k | 20k | 25k | 30k | 35k | 40k | 45k | 50k | 55k | 59.9k |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| val | 3.6336 | 3.4535 | 3.3596 | 3.2999 | 3.2505 | 3.2087 | 3.1706 | 3.1368 | 3.1083 | 3.0846 | 3.0689 | **3.0610** |
+
+- **备注（定位与口径，务必注意）**：
+  - **非单变量实验**：本 run 同时动了 模型规模（51.4M→101.5M，1.97×）与 数据（1B→1.96B，且**完全不同的书**），
+    另叠加 vocab（6144→8192，依据上方短测）与 FFN（relu→swiglu，依据 FFN 短程对照）
+    → 属「综合升级」性质，**不要按单变量标准归因**（同 v2 家族定义）。
+  - **★ 新评估空间**：本 run 的 val 是 **shard1+2 自己的 val**（新 split）。按「实验比较规则」，
+    validation split 变化 → **loss 不可直接比较**。因此 **3.0610 不在 v2/v3 可比链内**，
+    **不可与 v3_alpha 3.2097 排名**；它是新空间的第一个基准点。
+  - 若只做量级参考（**不构成严格对比**）：换算 bits/char，v3_alpha ≈ 3.710 vs 本 run ≈ 3.465（−6.6%）。
+  - 50M/1B 与 100M/1.96B 均约 19–20 token/参数，两边都落在 Chinchilla 附近，比例本身是正确的。
+- **两个运行时坑（已写进脚本注释）**：
+  1. **`ulimit -n 65535` 必须**：`ShardMemmap.__init__` 会一次性 `np.memmap` 打开**所有**分片，
+     本语料 **1660 片 > 容器默认 soft limit 1024** → `OSError: [Errno 24] Too many open files`。
+     shard0（828 片）时未暴露，语料翻倍才踩到。
+  2. **自动关机在容器内不可用**：`/usr/bin/shutdown` 实际只 `kill supervisord`，
+     容器 PID 1 会把它**重启** → 实例不关机。跑完需**人工在控制台关机**。
+- **产物**：`log/100M参数_v3_2Btokens/`（`run_config.txt` / `step_history_train_webnovel_shard12.csv` /
+  `val_history_train_webnovel_shard12.csv` / `train_100m.log` / `training_curve_100m.png`）；
+  云端 `/root/result_100m/`（`checkpoint_best.pt` 389MB / `checkpoint_latest.pt` 1.2GB / tokenizer）
+- **下一步**：本 run 末段（50k→59.9k 仅降 0.024）下降已明显放缓；数据侧继续扩（shard3+）或参数侧继续扩
+  需先定新评估空间的比较口径（建议后续 run 固定用 shard1+2 的 val，形成新的可比链）。
