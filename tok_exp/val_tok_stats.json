@@ -1,0 +1,29 @@
+{
+  "prod6144": {
+    "vocab_size": 6144,
+    "n_val_tokens": 115284428,
+    "n_val_chars": 143893657,
+    "n_val_bytes": 425013482,
+    "chars_per_token": 1.2481621281930635,
+    "bytes_per_token": 3.68665126221557,
+    "encode_seconds": 13.71201270003803
+  },
+  "new6144": {
+    "vocab_size": 6144,
+    "n_val_tokens": 115768528,
+    "n_val_chars": 143893657,
+    "n_val_bytes": 425013482,
+    "chars_per_token": 1.2429427883889135,
+    "bytes_per_token": 3.6712350873114667,
+    "encode_seconds": 13.238944899989292
+  },
+  "new8192": {
+    "vocab_size": 8192,
+    "n_val_tokens": 111880991,
+    "n_val_chars": 143893657,
+    "n_val_bytes": 425013482,
+    "chars_per_token": 1.28613141261861,
+    "bytes_per_token": 3.7987997621508374,
+    "encode_seconds": 14.344816599972546
+  }
+}

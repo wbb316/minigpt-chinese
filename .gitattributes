@@ -1,0 +1,39 @@
+# Git 换行符/文本属性
+#
+# 为什么需要它：仓库原先没有 .gitattributes，而 Windows 上 core.autocrlf=true
+# → 提交的 .sh 会在 checkout 时被换成 CRLF，scp 到 Linux 后 bash 直接报
+#   `$'\r': command not found`。云端脚本全部依赖 LF。
+#
+# 规则：
+#   *.sh  → 强制 LF（在 Linux 上执行）
+#   *.ps1 → 强制 CRLF（Windows PowerShell 友好；LF 也能跑，但保持一致）
+#   *.py / *.md / *.yaml / *.json / *.csv / *.txt → LF（跨平台，diff 干净）
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+*.py    text eol=lf
+*.md    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.csv   text eol=lf
+*.txt   text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+
+# 二进制：禁止任何换行转换
+*.pt    binary
+*.pth   binary
+*.pkl   binary
+*.npy   binary
+*.bin   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.gz    binary
+*.zip   binary
+*.jsonl binary

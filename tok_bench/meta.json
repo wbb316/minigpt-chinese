@@ -1,0 +1,41 @@
+{
+  "seed": 20260910,
+  "source": "data/val_webnovel_v2.txt",
+  "note": "held-out: val 语料不参与 tokenizer 训练（训练样本取自 train_webnovel_v2.txt）",
+  "B1": {
+    "books": 20,
+    "chars_per_book": 20000,
+    "total_chars": 400000,
+    "book_ids": [
+      121,
+      259,
+      79,
+      167,
+      374,
+      352,
+      580,
+      260,
+      15,
+      93,
+      178,
+      191,
+      132,
+      407,
+      551,
+      373,
+      529,
+      94,
+      498,
+      257
+    ]
+  },
+  "B2": {
+    "segments": 200,
+    "chars_per_seg": 2000,
+    "total_chars": 400000
+  },
+  "B3": {
+    "total_chars": 12601,
+    "special_hits": 6
+  }
+}

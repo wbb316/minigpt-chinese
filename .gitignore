@@ -39,6 +39,20 @@ scratch/*-ubyte
 *.key
 *.pem
 
+# ---- 安全：含 AutoDL 主机/端口 字面量的一次性脚本，不入库 ----
+# （docs/MiniGPT_Project_Status.md 明确要求「ssh 地址另行保存，不入库」）
+# 需要云端连接信息的长期脚本请 dot-source scratch/cloud_env.ps1 从
+# .autodl_key/connection.txt 读，而不是把主机名写死。
+scratch/auto_encode_after_upload.ps1
+scratch/auto_smoke_after_upload.ps1
+scratch/check_stage.ps1
+scratch/dl_parts.ps1
+scratch/cloud_pull_from_westb.sh
+scratch/cloud_vocab_cmp_status.ps1
+scratch/deploy_vocab_cmp.ps1
+scratch/fetch_vocab_cmp.ps1
+scratch/test_parallel_upload.ps1
+
 # ---- 杂项 ----
 *.log
 .probe.bin

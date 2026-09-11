@@ -1,0 +1,98 @@
+{
+  "v4096": {
+    "vocab_size": 4096,
+    "eval_chars": 40000000,
+    "eval_tokens": 34354516,
+    "vocab_used": 3871,
+    "vocab_util": 0.945068359375,
+    "num_unused": 225,
+    "extrapolate_scale": 29.108254646929097,
+    "thresholds": {
+      "lt_10": {
+        "num_tokens": 0,
+        "pct_of_vocab": 0.0,
+        "pct_of_token_slots": 0.0
+      },
+      "lt_100": {
+        "num_tokens": 22,
+        "pct_of_vocab": 0.00537109375,
+        "pct_of_token_slots": 1.0478971672894474e-06
+      },
+      "lt_1000": {
+        "num_tokens": 70,
+        "pct_of_vocab": 0.01708984375,
+        "pct_of_token_slots": 2.61101044182954e-05
+      },
+      "lt_10000": {
+        "num_tokens": 173,
+        "pct_of_vocab": 0.042236328125,
+        "pct_of_token_slots": 0.0005593733295500364
+      }
+    },
+    "median_proj_occ": 106390.67073452585
+  },
+  "v6144": {
+    "vocab_size": 6144,
+    "eval_chars": 40000000,
+    "eval_tokens": 32262700,
+    "vocab_used": 5720,
+    "vocab_util": 0.9309895833333334,
+    "num_unused": 424,
+    "extrapolate_scale": 30.995545940048416,
+    "thresholds": {
+      "lt_10": {
+        "num_tokens": 0,
+        "pct_of_vocab": 0.0,
+        "pct_of_token_slots": 0.0
+      },
+      "lt_100": {
+        "num_tokens": 39,
+        "pct_of_vocab": 0.00634765625,
+        "pct_of_token_slots": 2.076701577983244e-06
+      },
+      "lt_1000": {
+        "num_tokens": 137,
+        "pct_of_vocab": 0.022298177083333332,
+        "pct_of_token_slots": 4.959287350407746e-05
+      },
+      "lt_10000": {
+        "num_tokens": 367,
+        "pct_of_vocab": 0.059733072916666664,
+        "pct_of_token_slots": 0.0012241380913562722
+      }
+    },
+    "median_proj_occ": 66299.47276576357
+  },
+  "v8192": {
+    "vocab_size": 8192,
+    "eval_chars": 40000000,
+    "eval_tokens": 31163531,
+    "vocab_used": 7470,
+    "vocab_util": 0.911865234375,
+    "num_unused": 722,
+    "extrapolate_scale": 32.088789938470065,
+    "thresholds": {
+      "lt_10": {
+        "num_tokens": 0,
+        "pct_of_vocab": 0.0,
+        "pct_of_token_slots": 0.0
+      },
+      "lt_100": {
+        "num_tokens": 70,
+        "pct_of_vocab": 0.008544921875,
+        "pct_of_token_slots": 3.7222996328625276e-06
+      },
+      "lt_1000": {
+        "num_tokens": 237,
+        "pct_of_vocab": 0.0289306640625,
+        "pct_of_token_slots": 8.173014797328326e-05
+      },
+      "lt_10000": {
+        "num_tokens": 704,
+        "pct_of_vocab": 0.0859375,
+        "pct_of_token_slots": 0.0024032899224417158
+      }
+    },
+    "median_proj_occ": 46111.591141581484
+  }
+}
