@@ -179,10 +179,15 @@ def main():
     parser.add_argument('--min-lr-ratio', type=float, default=0.1,
                         help='cosine 衰减底部学习率 = max_lr × 该比例（默认 0.1，不再衰减到 0，'
                              '保留尾部学习能力；设 0.0 恢复衰减到 0）')
-    parser.add_argument('--lr-scheme', default='cosine', choices=['cosine', 'const'],
+    parser.add_argument('--lr-scheme', default='cosine',
+                        choices=['cosine', 'const', 'wsd', 'hold-decay', 'const-tail'],
                         help='LR 调度：cosine=warmup+cosine 衰减（默认，从头训练）；'
                              'const=恒 lr=max_lr×min_lr_ratio（--resume 续跑 Epoch2+ 用：'
-                             '从上一轮尾 lr 继续，不重铺 cosine，杜绝 resume 首步 LR 突跳）')
+                             '从上一轮尾 lr 继续，不重铺 cosine，杜绝 resume 首步 LR 突跳）；'
+                             'wsd=warmup-stable-decay（6M LR 筛选实验：warmup 5%% + stable '
+                             '至总步 75%% + cosine decay 到尾）；hold-decay=高位保持后衰减'
+                             '（warmup 5%% + peak 保持至总步 60%% + 尾 40%% cosine decay）；'
+                             'const-tail=前 50%% 步 cosine 衰减到 min 后恒 min（尾部 const 探底）')
     parser.add_argument('--grad-clip', type=float, default=1.0)
     # 性能专项（TRAINING_PERFORMANCE_AUDIT）参数
     parser.add_argument('--log-every', type=int, default=20,
@@ -415,23 +420,51 @@ def main():
         except Exception as e:
             print(f'⚠️ --init-optimizer 加载失败（{e}）→ 优化器保持全新')
 
-    # ---------- LR 调度（cosine / const 恒温续训） ----------
+    # ---------- LR 调度（cosine / const / wsd / hold-decay / const-tail） ----------
     # cosine: warmup + cosine 衰减到 max_lr×min_ratio（默认路径，从头训练）
     # const : 恒 lr = max_lr×min_ratio —— 给 --resume 续跑 Epoch2+ 用：
     #         从上一轮尾 lr 继续，不按新 total_steps 重铺 cosine（重铺会使
     #         resume 首步 LR 从 5e-5 突跳回 ~4.35e-4，见 docs/RESUME_AUDIT.md §2）
+    # wsd / hold-decay / const-tail：6M LR schedule 筛选实验用（2026-09-08），
+    #         曲线按总步比例硬编码，比例见下方注释（不新增参数，避免调度参数空间膨胀）。
+    #         ★ 所有 scheme 的 warmup 都取 args.warmup_steps（按总步比例传入，如
+    #         total=5000 时 5% ≈ 250 步）。
     warmup = args.warmup_steps
     min_ratio = max(0.0, args.min_lr_ratio)          # 底部学习率比例（默认 0.1）
+    scheme = args.lr_scheme
+
+    def _cos(frac):
+        """cosine 从 1.0 衰减到 min_ratio；frac ∈ [0,1] 表示衰减区间进度。"""
+        return min_ratio + 0.5 * (1.0 - min_ratio) * (1.0 + math.cos(math.pi * frac))
 
     def lr_lambda(step):
         if step < warmup:
             return (step + 1) / warmup                       # 线性升到 1.0
-        t = (step - warmup) / max(1, total_steps - warmup)   # 0 → 1
+        if scheme == 'const':
+            return min_ratio
+        # warmup 后的总进度（按剩余步数归一，防止 warmup 长时余弦被压缩）
+        t = (step - warmup) / max(1, total_steps - warmup)
         t = min(t, 1.0)
-        # cosine 从 1.0 衰减到 min_ratio（默认 0.1，不归零 → 尾部保留学习能力）
-        return min_ratio + 0.5 * (1.0 - min_ratio) * (1.0 + math.cos(math.pi * t))
+        if scheme == 'cosine':
+            return _cos(t)
+        if scheme == 'wsd':
+            # warmup(5%) + stable 至总步 ~75%（剩余步 73.7%）+ cosine decay 到尾
+            if t < 0.7:                                      # stable 段保持 peak
+                return 1.0
+            return _cos((t - 0.7) / 0.3)                     # 尾 30% 剩余步内衰减
+        if scheme == 'hold-decay':
+            # warmup(5%) + peak 保持至总步 ~60%（剩余步 57.9%）+ 尾 40% 剩余步衰减
+            if t < 0.55:                                     # hold 段保持 peak
+                return 1.0
+            return _cos((t - 0.55) / 0.45)                   # 尾 45% 剩余步内衰减
+        if scheme == 'const-tail':
+            # 前 50% 剩余步 cosine 衰减到 min，后 50% 恒 min（尾部 const 探底）
+            if t < 0.5:
+                return _cos(t / 0.5)
+            return min_ratio
+        raise ValueError(f'未知 lr-scheme: {scheme}')
 
-    if args.lr_scheme == 'const':
+    if scheme == 'const':
         # 恒 lr = max_lr × min_ratio；lambda 与 step 无关 → step() 幂等、无跳变
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer, lambda s: min_ratio)
@@ -439,8 +472,11 @@ def main():
               f'continuation 用，不重铺 cosine）')
     else:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-        print(f'LR 方案: cosine（warmup {warmup} 步 → '
-              f'衰减到 {args.lr * min_ratio:.2e}）')
+        desc = {'cosine': f'cosine（warmup {warmup} 步 → 衰减到 {args.lr * min_ratio:.2e}）',
+                'wsd': f'WSD（warmup {warmup} 步 + stable 至总步75% + decay 到尾）',
+                'hold-decay': f'hold-decay（warmup {warmup} 步 + 保持至总步60% + 尾衰减）',
+                'const-tail': f'const-tail（前50%衰减到 {args.lr * min_ratio:.2e}，后50%恒 min）'}[scheme]
+        print(f'LR 方案: {desc}')
     scaler = torch.amp.GradScaler('cuda') if use_scaler else None
 
     # ---------- 断点续训（加轮数: --resume <latest> --epochs 更大的总数） ----------
