@@ -32,7 +32,14 @@ def clean_text(text: str) -> str:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ★ 从 checkpoint 自动推断架构（层数/维度/词表/block_size 随训练配置变，这里不用再改）
-def load_model(ckpt_path, tok_path, n_head=8):
+def load_model(ckpt_path, tok_path, n_head=None):
+    """加载模型，架构从 state_dict 自动推断。
+
+    n_head：**默认 None = 自动推断**。RoPE 的 `rope.cos_cached` 形状是
+    `(1, 1, T, head_dim)`，于是 `n_head = n_embd / head_dim`。
+    旧的 sinusoidal 存档没有 head_dim 信息 → 自动推断不可用，退回 8，
+    需显式 `--n-head`（例：v2 50M 是 9 头）。
+    """
     sd = torch.load(ckpt_path, map_location='cpu', weights_only=True)
     # torch.compile 训练的 checkpoint 带 '_orig_mod.' 前缀（OptimizedModule 痕迹），
     # 剥离后所有解析逻辑按无前缀 key 统一处理（旧存档本来无前缀，兼容）
@@ -42,8 +49,24 @@ def load_model(ckpt_path, tok_path, n_head=8):
     n_embd = sd['token_emb.weight'].shape[1]
     vocab_size = sd['token_emb.weight'].shape[0]
     block_size = sd['pos_emb.pe'].shape[1]          # PositionalEncoding 的 buffer 记录训练长度
-    assert n_embd % n_head == 0, f'n_embd={n_embd} 不能被 n_head={n_head} 整除'
     pe = 'rope' if 'rope.cos_cached' in sd else 'sinusoidal'   # 自动检测
+    # 头数：显式传入优先；否则由 RoPE 的 head_dim 推断；再否则回退 8
+    head_dim = int(sd['rope.cos_cached'].shape[-1]) if pe == 'rope' else None
+    if n_head is None:
+        if head_dim and n_embd % head_dim == 0:
+            n_head = n_embd // head_dim
+            print(f'头数自动推断: head_dim={head_dim} → n_head={n_head}')
+        else:
+            n_head = 8
+            print('⚠️ 该存档无 head_dim 信息（非 RoPE）→ 头数回退默认 8；'
+                  '若模型不是 8 头，请用 --n-head 显式指定')
+    assert n_embd % n_head == 0, f'n_embd={n_embd} 不能被 n_head={n_head} 整除'
+    # ★ 防呆：显式传错头数时 n_embd 往往仍能被整除（704/8=88），
+    #   旧代码会**静默加载成功但输出乱码**。这里用存档里的 head_dim 硬校验。
+    if head_dim is not None:
+        assert head_dim == n_embd // n_head, (
+            f'--n-head={n_head} 与存档不符：存档 head_dim={head_dim}、n_embd={n_embd} '
+            f'→ 应为 {n_embd // head_dim} 头（传 0/省略可自动推断）')
     # FFN 自动检测：含 gate_proj → swiglu（v3 FFN 变体）；否则 relu/gelu（fc1/fc2 同名）
     ff_type = 'swiglu' if any(k.endswith('gate_proj.weight') for k in sd) else 'relu'
     ff_hidden = sd['blocks.0.ff.gate_proj.weight'].shape[0] if ff_type == 'swiglu' else None
@@ -60,10 +83,15 @@ def load_model(ckpt_path, tok_path, n_head=8):
     return gpt, tokenizer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 默认模型 = v2 35M（webnovel_v2 语料，2B token，val 3.6372）
+# 默认模型 = **v3_beta 100M**（16L/704d/11H，vocab 8192，swiglu+rope）
+#   shard1+2 新语料 1.96B token 单轮，val 3.0610（shard1+2 空间，见 docs/EXPERIMENT_LOG.md）
+#   ⚠️ 头数 11 由 load_model 从 rope.cos_cached 自动推断，无需 --n-head
+# 换回旧模型：改这两行即可（或命令行 --ckpt/--tokenizer 覆盖）
+#   35M v2 (sinusoidal, 8 头): result/35M参数+998Mtokens/
+#   50M v3_alpha (rope, 9 头): log/50M参数_v3_alpha+998Mtokens/
 # 归档位置见 result/ 总文件夹结构（docs/MiniGPT_Project_Status.md）
-DEFAULT_CKPT = os.path.join(ROOT, 'result', '35M参数+998Mtokens', 'checkpoint_best.pt')
-DEFAULT_TOK = os.path.join(ROOT, 'result', '35M参数+998Mtokens', 'tokenizer_best.pkl')
+DEFAULT_CKPT = os.path.join(ROOT, 'result', '100M参数v3+2Btokens', 'checkpoint_best.pt')
+DEFAULT_TOK = os.path.join(ROOT, 'result', '100M参数v3+2Btokens', 'tokenizer_best.pkl')
 
 # FastAPI 应用
 app = FastAPI()
@@ -107,12 +135,17 @@ def main():
     ap = argparse.ArgumentParser(description='MiniGPT 中文续写 Web 服务')
     ap.add_argument('--ckpt', default=DEFAULT_CKPT, help='模型权重 checkpoint_best.pt')
     ap.add_argument('--tokenizer', default=DEFAULT_TOK, help='分词器 tokenizer_best.pkl')
+    ap.add_argument('--n-head', type=int, default=None,
+                    help='注意力头数。默认省略 = 自动推断（RoPE 存档按 '
+                         'head_dim 反推；35M=8 / 50M v3_alpha=9 / 100M v3_beta=11）')
     ap.add_argument('--host', default='0.0.0.0')
     ap.add_argument('--port', type=int, default=8000)
     args = ap.parse_args()
 
     global gpt, tokenizer
-    gpt, tokenizer = load_model(os.path.abspath(args.ckpt), os.path.abspath(args.tokenizer))
+    gpt, tokenizer = load_model(os.path.abspath(args.ckpt),
+                                os.path.abspath(args.tokenizer),
+                                n_head=args.n_head)
     print(f'服务启动: http://127.0.0.1:{args.port} （Ctrl+C 停止）')
     uvicorn.run(app, host=args.host, port=args.port)
 
