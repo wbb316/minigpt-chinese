@@ -638,30 +638,34 @@ def main():
     stopped = False
 
     # ---------- 验证历史 CSV（每次验证追加一行，resume 续训也接着记） ----------
+    # 末尾 time_unix = epoch 秒（毫秒精度），与 step CSV 口径一致；wall_time 列保留不动。
     corpus_tag = os.path.splitext(os.path.basename(args.train_txt))[0]
     log_dir = resolve(args.log_dir)
     os.makedirs(log_dir, exist_ok=True)
     val_csv_path = os.path.join(log_dir, f"val_history_{corpus_tag}.csv")
     csv_header = ('step,where,val,train_eval,gap,lr,is_best,no_improve,'
-                  'best_val,wall_time')
+                  'best_val,wall_time,time_unix')
     if not os.path.exists(val_csv_path) or os.path.getsize(val_csv_path) == 0:
         with open(val_csv_path, 'w', encoding='utf-8') as f:
             f.write(csv_header + '\n')
         print(f'📈 验证历史将记录到: {val_csv_path}')
 
     # ---------- step 级历史 CSV（每步一行: tokens_seen 用于跨 run 公平比较） ----------
-    # 列: step,epoch,tokens_seen,train_loss(EMA),val_loss(验证步才有),lr,tokens_per_sec,time
+    # 列: step,epoch,tokens_seen,train_loss(EMA),val_loss(验证步才有),lr,tokens_per_sec,time,time_unix
     # tokens_seen = 全局累计看到的 token 数(含 resume 前的), 与 batch/epoch 无关,
     #   以后比较 400M vs 1B tokens / 不同 batch 都看这一列。
     # tokens_per_sec = 自上次落盘以来的**实测吞吐**（含验证开销，FFN 变体对比用）。
+    # time_unix = epoch 秒（毫秒精度）——列在末尾**追加**，旧解析器按列名取值不受影响；
+    #   benchmark 的吞吐/GPU telemetry 窗口用它算 Δt（秒级 time 列量化误差 ≈1.2%）。
     step_csv_path = os.path.join(log_dir, f"step_history_{corpus_tag}.csv")
-    step_header = 'step,epoch,tokens_seen,train_loss,val_loss,lr,tokens_per_sec,time'
+    step_header = ('step,epoch,tokens_seen,train_loss,val_loss,lr,'
+                   'tokens_per_sec,time,time_unix')
     step_csv_new = (not os.path.exists(step_csv_path)
                     or os.path.getsize(step_csv_path) == 0)
     step_fh = open(step_csv_path, 'a', encoding='utf-8')
     if step_csv_new:
         step_fh.write(step_header + '\n')
-    _buf: list[str] = []          # 行缓冲, 攒批落盘
+    _buf: list[list[str]] = []    # 行缓冲, 攒批落盘（存字段列表，含行生成时刻的 time_unix）
     _last_flush_step = 0
     _acc_sec = 0.0                # 自上次落盘累计的墙钟时间（训练步）
     _acc_tok = 0                  # 自上次落盘累计的 token 数
@@ -669,7 +673,7 @@ def main():
     def flush_step_rows():
         nonlocal _buf, _last_flush_step, _acc_sec, _acc_tok
         if _buf:
-            step_fh.write('\n'.join(_buf) + '\n')
+            step_fh.write('\n'.join(','.join(f) for f in _buf) + '\n')
             _buf = []
         _last_flush_step = global_step
         _acc_sec = 0.0
@@ -677,26 +681,35 @@ def main():
 
     def append_step_row(train_loss_ema, val_loss=None):
         """每步调一次; val_loss 非 None(验证步) 时带上。
-        tok_total 由主循环按 x.numel() 精确累计（尾批不按满 batch 计，见 §D）。"""
+        tok_total 由主循环按 x.numel() 精确累计（尾批不按满 batch 计，见 §D）。
+
+        time_unix 在**本行生成时**取样（而非 flush 落盘时）——后台攒批 25 步后
+        flush，用落盘时刻会把 Δt 算错，benchmark 的窗口过滤与吞吐都会失真。
+        """
         tok = tok_total
         ep = tok / max(1, len(train_tokens))                    # 进度(按 token 计)
         val_s = f'{val_loss:.4f}' if val_loss is not None else ''
         tps = f'{_acc_tok / _acc_sec:.0f}' if _acc_sec > 0 else ''
-        row = (f'{global_step},{ep:.3f},{tok},{train_loss_ema:.4f},{val_s},'
-               f'{scheduler.get_last_lr()[0]:.2e},{tps},'
-               f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
-        _buf.append(row)
+        _buf.append([
+            f'{global_step}', f'{ep:.3f}', f'{tok}', f'{train_loss_ema:.4f}',
+            val_s, f'{scheduler.get_last_lr()[0]:.2e}', tps,
+            _time.strftime('%Y-%m-%d %H:%M:%S'), f'{_time.time():.3f}',
+        ])
         # 每 25 步 flush 一次
         if global_step - _last_flush_step >= 25:
             flush_step_rows()
 
     def log_validation_row(where, val_loss, train_ev, gap, lr, is_best):
-        """把一次验证结果追加到 val CSV（细粒度每验证行）。"""
+        """把一次验证结果追加到 val CSV（细粒度每验证行）。
+
+        time_unix 同样追加在末尾（毫秒精度，与 step CSV 口径一致）；
+        wall_time 列保持原样不动。
+        """
         row = (f'{global_step},{where},{val_loss:.4f},'
                f'{train_ev if train_ev is not None else ""},'
                f'{gap if gap is not None else ""},{lr:.2e},'
                f'{int(is_best)},{no_improve},{best_val:.4f},'
-               f'{_time.strftime("%Y-%m-%d %H:%M:%S")}')
+               f'{_time.strftime("%Y-%m-%d %H:%M:%S")},{_time.time():.3f}')
         with open(val_csv_path, 'a', encoding='utf-8') as f:
             f.write(row + '\n')
         # step 历史里也补一行带 val 的（与无 val 的 step 行并存, 画图取非空列即可）

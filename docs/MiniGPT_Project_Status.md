@@ -200,9 +200,11 @@ v{版本}_{模型}_ctx{context}_{数据规模}
 ## 日志规范
 
 - **每次训练完成后**：在 `docs/EXPERIMENT_LOG.md` 末尾追加一行（日期/commit/模型配置/数据版本/token 数/训练时间/best val/备注）
-- `log/step_history_{语料}.csv`：每步一行 `step,epoch,tokens_seen,train_loss,val_loss,lr,time`
+- `log/step_history_{语料}.csv`：每步一行 `step,epoch,tokens_seen,train_loss,val_loss,lr,tokens_per_sec,time,time_unix`
   - **tokens_seen 跨 run 连续**，比较 400M/1B tokens / 不同 batch 看这列
-- `log/val_history_{语料}.csv`：每次验证一行（含 gap/train_eval/is_best）
+  - `time_unix` = epoch 秒（毫秒精度），2026-09-12 起**追加在末尾**（benchmark 的吞吐/GPU telemetry
+    窗口用它算 Δt；秒级 `time` 列保留 → 历史 8 列 CSV 仍可读；该值在**行生成时**取样，非 flush 落盘时）
+- `log/val_history_{语料}.csv`：每次验证一行（含 gap/train_eval/is_best；末尾同样追加 `time_unix`）
 - `log/run_config.txt`：每次启动的完整配置快照（追加，resume 也单独一段）
 
 ## 环境信息
