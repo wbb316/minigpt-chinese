@@ -171,7 +171,17 @@ def main():
                         help='--init-from 时是否同时继承该 checkpoint 的优化器/scaler 状态'
                              '（默认否：起点更干净；开则动量也延续）')
     # 优化
-    parser.add_argument('--batch-size', type=int, default=512)
+    parser.add_argument('--batch-size', type=int, default=512,
+                        help='micro-batch 大小（单次送进 GPU 的批量）')
+    parser.add_argument('--grad-accum', type=int, default=1,
+                        help='梯度累积步数 → effective batch = batch_size × grad_accum，'
+                             '每 accum 个 micro-step 才做一次 optimizer update。'
+                             '默认 1 = 与旧行为逐位一致（每个 batch 都更新）。'
+                             '★ global_step / LR scheduler / tokens_seen / 验证节奏'
+                             '**只在成功的 optimizer update 后推进**，不按 micro-step 推进；'
+                             'AMP overflow 跳过的周期同样不推进（与既有门控语义一致）。'
+                             '用途：显存装不下 effective batch 时（如 150M 在 batch64 OOM），'
+                             '用 micro32 × accum2 保持 32,768 token/update 不变。')
     parser.add_argument('--lr', type=float, default=8e-4)
     parser.add_argument('--weight-decay', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=10)
@@ -329,10 +339,15 @@ def main():
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                               shuffle=True, **loader_kwargs)
-    steps_per_epoch = len(train_loader)
+    micro_per_epoch = len(train_loader)                  # DataLoader 产出的是 **micro-batch** 数
+    accum = max(1, int(args.grad_accum))                 # 梯度累积步数（1 = 旧行为）
+    # effective batch = batch_size × accum → 每个 optimizer update 消耗 accum 个 micro-batch。
+    # ⚠️ total_steps 必须按 **effective batch** 折算，否则 accum>1 时步数翻倍、LR 调度整体错位。
+    steps_per_epoch = -(-micro_per_epoch // accum)       # ceil 除法（accum=1 时与原式逐位等价）
     total_steps = steps_per_epoch * args.epochs
     print(f'模式: {args.sample_mode}，样本数: 训{len(train_ds)} / 验{len(val_ds)}，'
-          f'每批 {args.batch_size} → 每 epoch {steps_per_epoch} 步 × {args.epochs} 轮 = {total_steps} 步')
+          f'micro-batch {args.batch_size} × accum {accum} = effective {args.batch_size * accum}'
+          f' → 每 epoch {steps_per_epoch} 次 optimizer update × {args.epochs} 轮 = {total_steps} 步')
 
     # eval 用固定随机子集（避免主循环中途再迭代同一 loader 导致 worker 冲突）
     def make_eval_loader(ds, n_batches):
@@ -552,8 +567,11 @@ def main():
         f'  packing:          {"pack(不重叠)" if args.sample_mode=="pack" else "slide(stride=1)"}',
         f'  eos_token:        <eos> (id={EOS_ID})  [纯续写训练未用]',
         'training:',
-        f'  batch_size:       {args.batch_size}',
-        f'  tokens_per_step:  {args.batch_size * args.block_size:,}',
+        f'  batch_size:       {args.batch_size}  (micro-batch)',
+        f'  grad_accum:       {accum}',
+        f'  effective_batch:  {args.batch_size * accum}',
+        f'  tokens_per_step:  {args.batch_size * accum * args.block_size:,}'
+        f'  (micro {args.batch_size} × accum {accum} × block {args.block_size})',
         f'  lr:               {args.lr}',
         f'  lr_scheme:        {args.lr_scheme}',
         f'  precision:        {args.precision}',
@@ -637,6 +655,13 @@ def main():
     ema = None
     stopped = False
 
+    # ---------- 梯度累积状态（--grad-accum）----------
+    # accum=1 时：micro_i 每步都归零、cyc_* 即单步量 → 行为与旧版逐位一致
+    micro_i = 0            # 当前累积周期内已完成的 micro-step 数
+    cyc_tok = 0            # 本周期累计 token（仅在成功 update 时提交到 tok_total）
+    cyc_sec = 0.0          # 本周期累计耗时（同上；AMP 跳过的周期不计入吞吐）
+    cyc_loss = None        # 本周期未缩放的 CE 之和（GPU 标量，仅 log 步 .item()，不引入同步）
+
     # ---------- 验证历史 CSV（每次验证追加一行，resume 续训也接着记） ----------
     # 末尾 time_unix = epoch 秒（毫秒精度），与 step CSV 口径一致；wall_time 列保留不动。
     corpus_tag = os.path.splitext(os.path.basename(args.train_txt))[0]
@@ -675,6 +700,11 @@ def main():
         if _buf:
             step_fh.write('\n'.join(','.join(f) for f in _buf) + '\n')
             _buf = []
+        # ⚠️ 必须显式 flush：函数名叫 flush 但原来只做了 write，
+        #    Python 的 8KB 缓冲会让 step CSV 在磁盘上长时间保持 0 字节
+        #    （2026-09-13 实测：跑到 694 步时文件仍为 0 字节，看起来像坏了）。
+        #    注意 val CSV 在 log_validation_row 里是 with open 独立写的，本来就即时落盘。
+        step_fh.flush()
         _last_flush_step = global_step
         _acc_sec = 0.0
         _acc_tok = 0
@@ -762,29 +792,58 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         gpt.train()
         running, steps_here = 0.0, 0
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch}', unit='step', ncols=100)
+        # ⚠️ 进度条数的是 **micro-batch**（DataLoader 的产出），不是 optimizer update。
+        #    --grad-accum>1 时两者相差 accum 倍（micro32×accum2 → 条上的数字是 step 的 2 倍），
+        #    容易误读成"总数对不上 total_steps"。标签里写明，避免歧义。
+        #    ★ 所有**落盘**的计数（step CSV 的 step / tokens_seen / val 节奏 / LR）都是
+        #      update 口径，正确无误 —— 只有这条进度条是 micro-batch 口径。
+        _desc = (f'Epoch {epoch}' if accum == 1
+                 else f'Epoch {epoch} [micro-batch ×{accum}=1 update]')
+        pbar = tqdm(train_loader, desc=_desc, unit='step', ncols=100)
         for x, y in pbar:
             _t0 = _time.perf_counter()          # 吞吐计时（FFN 变体对比）
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             # zero_grad 放 forward 前 + set_to_none（省 grad buffer 置零 kernel）
-            optimizer.zero_grad(set_to_none=True)
+            # ★ 梯度累积：只在**周期开头**清梯度（accum=1 时每步都清 = 与旧版一致）
+            if micro_i == 0:
+                optimizer.zero_grad(set_to_none=True)
             with torch.autocast('cuda', dtype=amp_dtype, enabled=use_cuda):
                 logits = gpt(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
 
+            # 周期内累计未缩放的 CE（GPU 标量相加，不触发 GPU→CPU 同步）
+            cyc_loss = loss.detach() if cyc_loss is None else cyc_loss + loss.detach()
+            # ★ 除以 accum 做平均：micro32×accum2 的梯度 == 真 batch64 的梯度
+            #   （CE 是 token 均值；两个等大 micro-batch 的均值再平均 == 合并后的均值）
+            # ⚠️ 必须保留 scaler.scale(...) 包装（fp16 GradScaler 的缩放），
+            #    只是把 loss 先除以 accum；漏掉它会直接
+            #    `AssertionError: Attempted unscale_ but _scale is None`
+            #    （2026-09-13 实际踩过，被 smoke test 当场抓住）。
+            scaled_loss = loss / accum
             if scaler is not None:
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)                       # 裁剪前先反缩放
+                scaler.scale(scaled_loss).backward()
             else:
-                loss.backward()
+                scaled_loss.backward()
+
+            micro_i += 1
+            cyc_tok += x.numel()
+            cyc_sec += _time.perf_counter() - _t0
+            if micro_i < accum:
+                continue          # 累积未满 → 不 unscale/不 clip/不 step/不推进任何进度
+
+            # ============ 累积周期结束：做且仅做一次真正的参数更新 ============
+            micro_i = 0
+            if scaler is not None:
+                scaler.unscale_(optimizer)                       # 裁剪前先反缩放（每周期一次）
             torch.nn.utils.clip_grad_norm_(dedupe_params(gpt), args.grad_clip)
 
             # ---- 更新门控（docs/RESUME_AUDIT.md §3）：仅当 optimizer 确实完成
             #      参数更新才推进 scheduler/global_step/tokens_seen/step 行 ----
             # AMP GradScaler 检测到 overflow 会跳过 optimizer.step →
-            # 该步不算训练步：不步进 scheduler（否则触发 "scheduler.step before
+            # 该周期不算训练步：不步进 scheduler（否则触发 "scheduler.step before
             # optimizer.step" warning 且 LR 计数错位）、不累计进度。
+            # ★ 累积模式下同样成立：micro-step **从不**推进这些量。
             if scaler is not None:
                 cnt0 = _opt_step_count(optimizer)
                 scaler.step(optimizer)
@@ -797,13 +856,13 @@ def main():
             if updated:
                 scheduler.step()
                 global_step += 1
-                tok_total += x.numel()       # 精确 token（尾批按实际 numel，§D）
-                _acc_sec += _time.perf_counter() - _t0
-                _acc_tok += x.numel()
+                tok_total += cyc_tok         # 精确 token（尾批按实际 numel，§D）
+                _acc_sec += cyc_sec
+                _acc_tok += cyc_tok
                 # ---- 采样记录（P1，--log-every）：每 N 步一次 loss.item()
                 #      GPU→CPU 同步 + EMA/tqdm/step 行；其余步零同步 ----
                 if global_step % args.log_every == 0:
-                    li = float(loss.item())
+                    li = float(cyc_loss.item()) / accum   # 周期内各 micro-batch 的均值
                     ema = li if ema is None else 0.99 * ema + 0.01 * li
                     running += li
                     steps_here += 1
@@ -813,6 +872,8 @@ def main():
             else:
                 amp_skip_steps += 1          # AMP overflow 跳过（不消耗进度）
 
+            cyc_tok, cyc_sec, cyc_loss = 0, 0.0, None
+
             if args.max_steps and global_step >= args.max_steps:
                 stopped = True
                 break
@@ -821,6 +882,39 @@ def main():
                     stopped = True
                     break
         pbar.close()
+
+        # ---- epoch 末尾：flush 残余累积（仅在 accum>1 且数据长度非整数倍时触发）----
+        # 不 flush 的话，最后一个不满周期里已算出的梯度会被**静默丢弃**。
+        # （本实验 2.93B token 下只影响末尾约 3k token，量级可忽略，但"静默丢数据"是错的。）
+        # stopped=True（max_steps / 早停）时不 flush —— 那是主动停止，不是数据用尽。
+        if micro_i != 0 and not stopped:
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(dedupe_params(gpt), args.grad_clip)
+            if scaler is not None:
+                cnt0 = _opt_step_count(optimizer)
+                scaler.step(optimizer)
+                scaler.update()
+                _flushed = _opt_step_count(optimizer) > cnt0
+            else:
+                optimizer.step()
+                _flushed = True
+            if _flushed:
+                scheduler.step()
+                global_step += 1
+                tok_total += cyc_tok
+                _acc_sec += cyc_sec
+                _acc_tok += cyc_tok
+                li = float(cyc_loss.item()) / micro_i
+                ema = li if ema is None else 0.99 * ema + 0.01 * li
+                running += li
+                steps_here += 1
+                append_step_row(ema)
+                tqdm.write(f'  ↳ epoch 末尾 flush 残余累积: {micro_i} 个 micro-batch / '
+                           f'{cyc_tok:,} token → step {global_step}')
+            else:
+                amp_skip_steps += 1
+            micro_i, cyc_tok, cyc_sec, cyc_loss = 0, 0, 0.0, None
 
         flush_step_rows()                              # epoch 末把缓冲落盘
         tqdm.write(f'epoch {epoch} 平均 train loss（每 {args.log_every} 步采样）: '
