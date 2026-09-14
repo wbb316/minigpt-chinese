@@ -305,23 +305,41 @@ def test_summary_fields_and_repeat_column():
     assert sf[0] == 'variant'
 
 
-def test_write_row_only_appends_and_warns_on_stale_header(tmp_path, monkeypatch, capsys):
-    """历史文件（28 列表头）不被重写：新行追加在后面，并给出一次告警。"""
+def test_write_row_normalizes_ragged_csv(tmp_path, monkeypatch, capsys):
+    """历史 28 列文件在写入前被补齐为统一宽度并备份；原有字段值逐字不变。
+
+    ⚠️ 2026-09-12 契约变更：E0-4 原契约是「只追加、从不重写历史文件」，
+    但那会留下「表头 29 列 / 历史行 28 列」的 ragged 文件，`pandas.read_csv`
+    直接抛 `Expected 28 fields in line N, saw 29`（实测）。故改为写入时自动补齐
+    —— 只给短行补**空的 repeat**，原有字段值不动。
+    """
     old_fields = pb.CSV_FIELDS.split(',')[:-1]
+    n = len(pb.CSV_FIELDS.split(','))
+    old_row = ['B0'] + ['1'] * (len(old_fields) - 1)
     p = tmp_path / 'results.csv'
-    p.write_text(','.join(old_fields) + '\n'
-                 + ','.join(['B0'] + ['1'] * (len(old_fields) - 1)) + '\n', encoding='utf-8')
-    before = p.read_text(encoding='utf-8')
+    p.write_text(','.join(old_fields) + '\n' + ','.join(old_row) + '\n', encoding='utf-8')
     monkeypatch.setattr(pb, 'RESULTS_CSV', str(p))
-    monkeypatch.setattr(pb, '_WARNED_STALE_HEADER', False)
+
     row = {f: '1' for f in old_fields}
     row.update(variant='B6_compile', commit='abc', repeat=2)
     pb.write_row(row)
-    after = p.read_text(encoding='utf-8')
-    assert after.startswith(before)                          # 历史内容逐字在前
-    assert after.count('\n') == before.count('\n') + 1
-    assert after.rstrip('\n').split('\n')[-1].count(',') == len(pb.CSV_FIELDS.split(',')) - 1
+
+    with open(p, newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+    assert all(len(r) == n for r in rows)              # 全文件统一宽度 → pandas 可读
+    assert rows[0] == pb.CSV_FIELDS.split(',')         # 表头被补齐
+    assert rows[1][:n - 1] == old_row                  # 历史字段值逐字未改
+    assert rows[1][-1] == ''                           # 只补了空 repeat
+    assert rows[-1][0] == 'B6_compile' and rows[-1][-1] == '2'
+    assert (tmp_path / 'results.csv.bak').exists()     # 改写前有备份
     assert 'repeat' in capsys.readouterr().err
+
+    # 幂等：文件已一致时再写一次，不应再次改写（.bak 不变，只追加）
+    before2 = p.read_text(encoding='utf-8')
+    bak_before = (tmp_path / 'results.csv.bak').read_text(encoding='utf-8')
+    pb.write_row(dict(row, variant='B7_bf16'))
+    assert (tmp_path / 'results.csv.bak').read_text(encoding='utf-8') == bak_before
+    assert p.read_text(encoding='utf-8').startswith(before2)
 
 
 def test_write_row_new_file_has_new_header(tmp_path, monkeypatch):
@@ -364,12 +382,18 @@ def test_write_summary_row_creates_header(tmp_path, monkeypatch):
 
 # ================================================================ E0-5: 配置档
 def test_50m_profile_is_identical_to_history():
-    """回归保护：50m 档必须与改动前逐字一致。"""
+    """回归保护：50m 档的**模型配置**必须与改动前逐字一致。
+
+    注意区分两类字段：`model_args` / `block_size` 属**模型配置**（一变就破坏历史可比性，
+    必须锁死）；`train_txt` / `val_txt` 属**环境路径** —— 2026-09-12 修正为系统盘
+    `/root/data/`（原写成数据盘 `/root/autodl-tmp/data/`，与实际不符，
+    导致每次跑都得手工 `--train-txt/--val-txt` 覆盖）。
+    """
     p50 = pb.MODEL_PROFILES['50m']
     assert p50['model_args'] == HIST_MODEL_ARGS_50M
     assert p50['block_size'] == 512
-    assert p50['train_txt'] == '/root/autodl-tmp/data/train_webnovel_v2.txt'
-    assert p50['val_txt'] == '/root/autodl-tmp/data/val_webnovel_v2.txt'
+    assert p50['train_txt'] == '/root/data/train_webnovel_v2.txt'
+    assert p50['val_txt'] == '/root/data/val_webnovel_v2.txt'
     assert p50['cache_dir'] == '/root/autodl-tmp/data'
     assert p50['tok_src'] == '/root/result_50m/tokenizer_v6144_s4000000.pkl'
     assert pb.DEFAULT_PROFILE == '50m'
@@ -381,12 +405,16 @@ def test_100m_profile_arch_and_paths():
                 '--vocab-size 8192'):
         assert tok in p['model_args']
     assert p['block_size'] == 512
+    assert p['train_txt'] == '/root/data/train_webnovel_shard12.txt'
+    assert p['val_txt'] == '/root/data/val_webnovel_shard12.txt'
     assert os.path.basename(p['train_txt']) == 'train_webnovel_shard12.txt'
     assert os.path.basename(p['val_txt']) == 'val_webnovel_shard12.txt'
     assert os.path.basename(p['tok_src']) == 'tokenizer_v8192_s4000000.pkl'
-    # 100m 的 tokenizer 目录在云端未验证 → 代码里必须留 TODO
+    # 2026-09-12：语料位置与 tokenizer 均已在云端**实测确认**（见下方注释里的实测记录），
+    # 所以 `TODO(云端确认)` 未验证标记应已移除。原先本测试断言 "TODO in src"，
+    # 那是把「未验证」当成了永久契约 —— 验证完成后它必然失败。
     src = open(os.path.join(ROOT, 'benchmark', 'perf_bench.py'), encoding='utf-8').read()
-    assert 'TODO' in src
+    assert 'TODO(云端确认)' not in src
 
 
 @pytest.mark.parametrize('prof_name', ['50m', '100m'])

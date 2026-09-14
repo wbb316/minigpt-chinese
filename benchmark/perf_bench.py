@@ -58,8 +58,11 @@ MODEL_PROFILES = {
                    '--vocab-size 6144 --tie-embeddings --sample-mode pack '
                    '--bpe-trainer fast --cache-format shards',
         block_size=512,                     # 必须与 model_args 的 --block-size 一致
-        train_txt='/root/autodl-tmp/data/train_webnovel_v2.txt',
-        val_txt='/root/autodl-tmp/data/val_webnovel_v2.txt',
+        # 语料在**系统盘** `/root/data/`（抗克隆），缓存才放数据盘 —— 理由见 100m 档下的说明。
+        # 2026-09-12 修正：原先写成 /root/autodl-tmp/data/，但语料实际不在那里，
+        #   导致每次跑都得用 --train-txt/--val-txt 手工覆盖（本次 50M workers 重测即如此）。
+        train_txt='/root/data/train_webnovel_v2.txt',
+        val_txt='/root/data/val_webnovel_v2.txt',
         cache_dir='/root/autodl-tmp/data',
         tok_src='/root/result_50m/tokenizer_v6144_s4000000.pkl',
     ),
@@ -70,13 +73,15 @@ MODEL_PROFILES = {
                    '--vocab-size 8192 --tie-embeddings --sample-mode pack '
                    '--bpe-trainer fast --cache-format shards',
         block_size=512,
-        # 数据文件名有仓库内证据：scratch/gzip_corpus.py 的 data/train|val_webnovel_shard12.txt
-        # + docs/EXPERIMENT_LOG.md 的 step_history_train_webnovel_shard12.csv；目录沿用 50m 的。
-        train_txt='/root/autodl-tmp/data/train_webnovel_shard12.txt',
-        val_txt='/root/autodl-tmp/data/val_webnovel_shard12.txt',
+        # 语料在**系统盘** `/root/data/`，**不是**数据盘：AutoDL 克隆只复制系统盘 `/`，
+        #   不带 `/root/autodl-tmp`（本项目已因此丢过一次语料）。
+        #   缓存体积大且可重建，才放数据盘。
+        # 2026-09-12 修正：原先写成 /root/autodl-tmp/data/ 是按 50m 档"对称推断"的，与实际不符。
+        train_txt='/root/data/train_webnovel_shard12.txt',
+        val_txt='/root/data/val_webnovel_shard12.txt',
         cache_dir='/root/autodl-tmp/data',
-        # TODO(云端确认): 目录 /root/result_100m/ 已由 docs/EXPERIMENT_LOG.md 证实存在（含 tokenizer），
-        #   文件名按 50m 的 tokenizer_v6144_s4000000.pkl 对称推断 → 跑之前先 `ls /root/result_100m/`。
+        # 已实测确认存在（2026-09-12；训练日志亦打印
+        #   "从缓存加载分词器: 词表 8192 ← /root/result_100m/..."），175,995 字节。
         tok_src='/root/result_100m/tokenizer_v8192_s4000000.pkl',
     ),
 }
@@ -430,41 +435,89 @@ def summarize_repeats(rows, name, profile_name):
 
 
 # ---------------------------------------------------------------- 输出
-_WARNED_STALE_HEADER = False
+def _is_header(rec):
+    return len(rec) > 1 and rec[0] == 'variant' and rec[1] == 'commit'
 
 
-def _warn_stale_header():
-    global _WARNED_STALE_HEADER
-    if _WARNED_STALE_HEADER:
-        return
-    _WARNED_STALE_HEADER = True
-    print('⚠️ performance_results.csv 表头是 E0-4 之前的旧格式（少 repeat 列）；'
-          '按需求"不重写历史文件"这里只追加新行 → 表头与新行宽度不一致，'
-          '读取请用 read_results_rows()（或手工把表头补上 ,repeat）。', file=sys.stderr)
+def normalize_results_csv(path=None, fields=None):
+    """把 performance_results.csv 补齐成**统一宽度**；返回是否发生了改动。
+
+    ⚠️ `path` 的默认值**不能**写成 `path=RESULTS_CSV`：Python 默认参数在**函数定义时**
+    求值，那样会绑死 import 时刻的路径，使运行时改写 / monkeypatch `RESULTS_CSV` 全部失效
+    （2026-09-12 被 test_perf_bench 当场抓出：测试规范化了真实文件而不是临时文件）。
+
+    为什么需要：E0-4 当时要求"只追加、不重写历史文件"，但那会留下
+    「表头 29 列 / 历史行 28 列」的 ragged 文件，`pandas.read_csv` 直接抛
+    `ParserError: Error tokenizing data. C error: Expected 28 fields in line N, saw 29`
+    （2026-09-12 实测）。仓库文档与作图脚本里都有 pandas 读 CSV 的用法，
+    所以这是个会绊倒后来者的真实缺陷，不只是"请用别的读取函数"就能了事。
+
+    做法：**只给短行补空字段**（缺 `repeat` 即补空，语义上就是"该次运行早于
+    repeat 特性、重复次数未知"），**原有字段值逐字不动**；表头统一为 CSV_FIELDS。
+    改前先备份 `*.bak`，写入走临时文件 + `os.replace`，避免中途失败留下半个文件。
+    """
+    fields = list(fields or CSV_FIELDS.split(','))
+    path = RESULTS_CSV if path is None else path
+    n = len(fields)
+    if not os.path.exists(path):
+        return False
+    with open(path, newline='', encoding='utf-8') as f:
+        rows = [r for r in csv.reader(f) if r]
+
+    fixed, changed = [], False
+    for rec in rows:
+        if _is_header(rec):
+            if rec != fields:
+                fixed.append(list(fields))
+                changed = True
+            else:
+                fixed.append(rec)
+        elif len(rec) != n:
+            fixed.append(rec + [''] * (n - len(rec)) if len(rec) < n else rec[:n])
+            changed = True
+        else:
+            fixed.append(rec)
+    if not changed:
+        return False
+
+    shutil.copy2(path, path + '.bak')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', newline='', encoding='utf-8') as f:
+        # ⚠️ 必须显式 `lineterminator='\n'`：csv 模块在 Windows 上默认写 `\r\n`，
+        #    而本仓库 `.gitattributes` 明确规定 `*.csv text eol=lf`（跨平台、diff 干净）。
+        #    2026-09-12 用默认值写出过 CRLF，被 git 警告才发现。
+        csv.writer(f, lineterminator='\n').writerows(fixed)
+    os.replace(tmp, path)
+    return True
 
 
 def write_row(row):
-    """追加一行到 performance_results.csv（**只追加，从不重写历史行**）。"""
-    global _WARNED_STALE_HEADER
+    """追加一行到 performance_results.csv，并**保证文件结构始终一致**。
+
+    写入前若发现任一行字段数与 CSV_FIELDS 不符（历史 28 列文件、或表头漏 repeat），
+    先 `normalize_results_csv()` 补齐再追加 → 任何时刻 `pandas.read_csv` 都能直接读。
+    """
     fields = CSV_FIELDS.split(',')
-    new = not os.path.exists(RESULTS_CSV)
-    if not new:
-        with open(RESULTS_CSV, newline='', encoding='utf-8') as f:
-            head = next(csv.reader(f), [])
-        if 'repeat' not in [h.strip() for h in head]:
-            _warn_stale_header()
-    with open(RESULTS_CSV, 'a', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        if new:
+    if not os.path.exists(RESULTS_CSV):
+        with open(RESULTS_CSV, 'a', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
             w.writeheader()
-        w.writerow(row)
+            w.writerow(row)
+        return
+    if normalize_results_csv():
+        print(f'ℹ️ performance_results.csv 存在字段数不一致的行（历史行缺 repeat 列）→ '
+              f'已补齐为统一 {len(fields)} 列（短行补空 repeat，原有字段值逐字未改），'
+              f'原文件备份为 .bak；现在 pandas.read_csv 可直接读取。', file=sys.stderr)
+    with open(RESULTS_CSV, 'a', newline='', encoding='utf-8') as f:
+        csv.DictWriter(f, fieldnames=fields, lineterminator='\n').writerow(row)
 
 
 def write_summary_row(row):
     """追加一行到 performance_summary.csv（新文件才写表头）。"""
     new = not os.path.exists(SUMMARY_CSV)
     with open(SUMMARY_CSV, 'a', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS.split(','))
+        w = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS.split(','),
+                           lineterminator='\n')
         if new:
             w.writeheader()
         w.writerow(row)
