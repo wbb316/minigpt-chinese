@@ -376,6 +376,61 @@
             line-height: 1.7;
         }
 
+        /* ================= 历史记录（控制区最底部 · 默认收起） ================= */
+        /* 折叠交给原生 <details>/<summary>：零 JS、零依赖、键盘可达。
+           收起时只占一行（summary），展开才占地方 —— 控制区已有 4 个滑条，很挤。
+           配色/字号/圆角全部沿用现有 token（--rule / --ink-2 / --ink-3 / --accent /
+           --accent-soft / --r-sm），不引入新的视觉风格。 */
+        #historyBox > summary {
+            cursor: pointer;
+            padding: 6px 0;
+            font-size: 12.5px;
+            color: var(--ink-2);
+        }
+        #historyBox > summary:hover,
+        #historyBox[open] > summary { color: var(--accent); }
+        .history-body {
+            margin-top: var(--sp-2);
+            padding-top: var(--sp-3);
+            border-top: 1px solid var(--rule);
+        }
+        .history-note { font-size: 11.5px; line-height: 1.7; color: var(--ink-3); }
+        /* 条目多了自己滚（限高，别把控制区撑到够不着） */
+        .history-list {
+            display: flex; flex-direction: column;
+            max-height: 240px;
+            margin-top: var(--sp-3);
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+        .history-list::-webkit-scrollbar { width: 9px; }
+        .history-list::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+        .history-list::-webkit-scrollbar-track { background: transparent; }
+        /* 单条：整行是一个 <button>（原生可点可键盘）；标题单行省略 + 右侧时间 */
+        .history-item {
+            display: flex; align-items: baseline; gap: var(--sp-2);
+            width: 100%;
+            padding: 7px 10px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            background: transparent;
+            color: var(--ink-2);
+            font-size: 12.5px;
+            line-height: 1.6;
+            text-align: left;
+        }
+        .history-item + .history-item { margin-top: 6px; }
+        .history-item:hover:not(:disabled),
+        .history-item:focus-visible {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+            outline: none;
+        }
+        .history-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .history-item-time { flex: none; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .history-foot { display: flex; justify-content: flex-end; margin-top: var(--sp-3); }
+
         /* ================= 阅读区（书页） ================= */
         .reading {
             border-left: 1px solid var(--rule);   /* 书脊暗示，克制 */
@@ -586,9 +641,34 @@
 
             <section>
                 <button class="btn-primary" id="genBtn" type="button">开始续写</button>
+                <!-- 「停止等待」：只在请求进行中可见（空闲时 hidden）。
+                     沿用 .btn-ghost 档位（与「清空」同级），不抢主按钮视线。
+                     ⚠️ 文案刻意是「停止等待」而不是「停止生成」：AbortController 只能
+                     中止**前端等待**，后端那个请求照旧在算（见 abortGenerate() 的注释）。 -->
+                <div class="row" id="abortRow" style="margin-top:10px; justify-content:center" hidden>
+                    <button class="btn-ghost" id="abortBtn" type="button">停止等待</button>
+                </div>
                 <div class="row" style="margin-top:12px; justify-content:center">
                     <span class="kbd-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速提交</span>
                 </div>
+            </section>
+
+            <!-- ==================== 历史记录（控制区最底部） ====================
+                 放在最后：窄屏单栏堆叠时它自然落到最下面，不需要额外结构。
+                 默认**收起**（<details> 不带 open）→ 只占一行，不挤滑条。
+                 ★ 纯前端 localStorage，后端与 /generate 契约零改动。 -->
+            <section id="historySection">
+                <details id="historyBox">
+                    <summary id="historySum">历史记录 (0)</summary>
+                    <div class="history-body">
+                        <!-- 说明文案：可用性/条数变化时由 renderHistory() 覆写（全部 textContent） -->
+                        <div class="history-note" id="historyNote">生成成功后会自动存一条，最多 20 条，只存在这台浏览器里。</div>
+                        <div class="history-list" id="historyList"></div>
+                        <div class="history-foot" id="historyFoot" hidden>
+                            <button class="btn-ghost" id="historyClearBtn" type="button">清除历史</button>
+                        </div>
+                    </div>
+                </details>
             </section>
         </aside>
 
@@ -629,6 +709,9 @@
             </div>
 
             <div class="row" id="actions" style="margin-top:18px" hidden>
+                <!-- 「接着写」：把当前全文接回输入框、立刻生成下一段（连续续写的起点）。
+                     沿用 .btn-soft 档位（与「复制正文」同级），不抢主按钮「开始续写」的视线。 -->
+                <button class="btn-soft" id="continueBtn" type="button">接着写</button>
                 <button class="btn-soft" id="copyBtn" type="button">复制正文</button>
                 <button class="btn-ghost" id="clearBtn" type="button">清空</button>
             </div>
@@ -653,9 +736,15 @@
             tempVal: $('tempVal'), toppVal: $('toppVal'), repVal: $('repVal'),
             maxTokensVal: $('maxTokensVal'),
             genBtn: $('genBtn'), resetBtn: $('resetBtn'),
+            abortRow: $('abortRow'), abortBtn: $('abortBtn'),
             emptyState: $('emptyState'), skeleton: $('skeleton'), article: $('article'),
             readBody: $('readBody'), meta: $('meta'),
             actions: $('actions'), copyBtn: $('copyBtn'), clearBtn: $('clearBtn'),
+            continueBtn: $('continueBtn'),
+            // 历史记录（控制区底部，默认收起）
+            historyBox: $('historyBox'), historySum: $('historySum'),
+            historyList: $('historyList'), historyNote: $('historyNote'),
+            historyFoot: $('historyFoot'), historyClearBtn: $('historyClearBtn'),
             ex1: $('ex1'), ex2: $('ex2'),
             toastHost: $('toastHost'),
         };
@@ -852,18 +941,25 @@
 
             const len = el.prompt ? el.prompt.value.length : 0;
             const room = limit - len;                 // 还能生成多少（字符≈token）
-            // 可生成上限 = block_size − 当前字数（用户要的语义：上下文总量固定，
-            // 输入占多少，剩下的就都能用来生成）。
-            // 服务端 max_tokens_max 只是**不误拦合法请求的天花板**，正常情况下
-            // room 先到顶；两者仍取 min，防止后端上限配得比 block_size 还小时越界。
-            const cap = maxTokensServerCap ? Math.min(maxTokensServerCap, room) : room;
+            // ★ 两种模式（2026-09-20 修正，见 commit message）：
+            //   A) len <= limit：输入还没占满窗口 → 上限 = limit − len。
+            //      这样"输入 + 生成"正好铺满窗口，不需要滑动。
+            //   B) len > limit：**输入本身已超窗** → 上限 = 服务端天花板。
+            //      此时 prompt 会被 generation.py:33 截到尾部、生成中窗口持续滑动，
+            //      内容本来就在"老化淡出"，没有"铺满窗口"可谈 —— 若仍按 room 算会得到
+            //      负数、被下限夹到 30，于是「接着写」每次只能续 30 字，功能等于废掉。
+            //      ⚠️ 这正是用户此前纠正过的同一类错误（拿一个假约束去压真实需求）。
+            const cap = (len > limit)
+                ? (maxTokensServerCap || limit)
+                : (maxTokensServerCap ? Math.min(maxTokensServerCap, room) : room);
             const max = Math.max(maxTokensFloor, cap);
             el.maxTokens.max = String(max);
 
             // 当前值超出新上限 → 夹紧（不静默：提示里说明，用户看得到）
+            // 超窗模式不夹紧：用户自己选的生成长度是合理的，没理由因为输入变长而没收
             let clamped = false;
             const cur = parseInt(el.maxTokens.value, 10) || 0;
-            if (cur > max) {
+            if (len <= limit && cur > max) {
                 el.maxTokens.value = String(max);
                 clamped = true;
             }
@@ -874,9 +970,16 @@
                 // 容易与开头脱节、句式趋重复。这不是错误，只是质量开始衰减的信号。
                 const SOFT = 300;
                 const parts = [];
-                if (len > 0) parts.push('输入 ' + len + ' 字 → 最多还能生成 ' + max + ' 字'
-                                       + (t < max ? '（再拉可到 ' + max + '）' : ''));
-                else parts.push('续写最大 token 数 · 上限随输入自动收缩');
+                if (len > limit) {
+                    // 超窗：如实说明窗口在滑动，别让用户以为"输入被完整看到了"
+                    parts.push('输入 ' + len + ' 字已超过窗口 ' + limit + '：模型只看最后 '
+                               + limit + ' 字，生成长度上限 ' + max);
+                } else if (len > 0) {
+                    parts.push('输入 ' + len + ' 字 → 最多还能生成 ' + max + ' 字'
+                               + (t < max ? '（再拉可到 ' + max + '）' : ''));
+                } else {
+                    parts.push('续写最大 token 数 · 上限随输入自动收缩');
+                }
                 if (t > SOFT) parts.push('⚠️ 超过 ' + SOFT + ' 字后可能逐渐与开头脱节');
                 el.maxHint.textContent = parts.join(' · ');
                 el.maxHint.classList.toggle('clamp-note', clamped);
@@ -962,6 +1065,49 @@
         // ---------------------------------------------------------------
         // 生成
         // ---------------------------------------------------------------
+        // ★★★「停止等待」的语义边界（别再误解，也别让后人误解）★★★
+        //   AbortController 只能中止**前端这一侧的等待**：fetch 的 promise 立刻
+        //   以 AbortError reject，骨架行随之消失，用户拿回界面控制权。
+        //
+        //   后端**不会**停。app/server.py 的 /generate 是同步 def，FastAPI 在线程池
+        //   里跑它；客户端断开并不会打断那段 Python —— 这次推理仍会一路算完
+        //   （150M / CPU 上 max_tokens=512 约 22s），只是结果没人接收。
+        //
+        //   所以：按钮文案是「停止等待」而不是「停止生成」，toast 也如实说明
+        //   "服务端可能仍在完成本次请求"。本次改动刻意**不加后端取消机制**
+        //   （同步 def 没有协作式取消点，塞不进 signal），也不做流式。
+        // ---------------------------------------------------------------
+        const canAbort = (typeof window.AbortController === 'function');
+        let inflight = null;     // 当前请求的 AbortController（仅前端等待可中止）
+        let genLocked = false;   // 是否已有请求进行中（防重入）
+        let lastResult = null;   // 上一次成功渲染的结果，中止后用来"可恢复"地回退
+        let lastMetaText = '';
+        let lastMetaTitle = '';
+
+        // 中止后回到**可用状态**：有上次结果就原样恢复（正文 + 细栏），
+        // 没有就回空态。任何一种都不能卡在骨架行。
+        function restoreAfterAbort() {
+            if (lastResult !== null) {
+                showResult(lastResult);
+                el.meta.textContent = lastMetaText;
+                el.meta.title = lastMetaTitle;
+                el.actions.hidden = false;
+            } else {
+                showEmpty();
+                el.meta.textContent = '';
+                el.meta.title = '';
+                el.actions.hidden = true;
+            }
+            el.readBody.scrollTop = 0;
+            updateContinueBtn();   // 有上次结果 → 「接着写」可用；没有 → 保持禁用
+        }
+
+        // 停止等待（= 只中止前端 fetch，见上方语义说明）
+        function abortGenerate() {
+            if (!inflight) return;   // 空闲/已结束时点它 = 无操作，别抛异常
+            inflight.abort();
+        }
+
         function extractDetail(body, status) {
             // FastAPI 的错误体是 {"detail": ...}；detail 可能是字符串（HTTPException）
             // 也可能是数组（422 校验错误，每项含 loc/msg/type）。
@@ -981,6 +1127,10 @@
         }
 
         async function generate() {
+            // 防重入（二道保险）：按钮已被 disabled，这里再挡一次快捷键 / 程序化调用。
+            // 中止后 genLocked 会在 finally 里复位，所以「停止等待」完可以立刻重新生成。
+            if (genLocked) return;
+
             const prompt = el.prompt.value.trim();
             // 空输入：内联提示 + 红边，不再用 alert 打断
             if (!prompt) { markInvalid('请先输入开头文字'); return; }
@@ -991,10 +1141,29 @@
             const rep = parseFloat(el.rep.value);
             const maxTokens = parseInt(el.maxTokens.value, 10);
 
+            // 本次请求的 controller 存进**局部变量**：finally / catch 只认这一个，
+            // 绝不会误清或误回退"用户紧接着发起的新请求"的状态。
+            const controller = canAbort ? new AbortController() : null;
+            inflight = controller;
+            const myRequest = controller;
+
+            // 快照"上次已渲染的结果"：中止时用它做可恢复回退（正文 + 细栏 + 动作条）。
+            // 先快照再 showSkeleton() —— showSkeleton() 会清空 el.article。
+            if (!el.article.hidden) {
+                lastResult = el.article.textContent;
+                lastMetaText = el.meta.textContent;
+                lastMetaTitle = el.meta.title;
+            }
+
+            genLocked = true;
             // 防连点：禁用按钮 + 状态切换
             el.genBtn.disabled = true;
             el.genBtn.textContent = '正在续写…';
             el.resetBtn.disabled = true;
+            updateContinueBtn();   // 「接着写」同样锁住（结果条此刻也会被隐藏，双保险）
+            // 「停止等待」只在请求进行中出现（不支持 AbortController 的浏览器 → 永不显示）
+            el.abortBtn.disabled = false;
+            setHidden(el.abortRow, !canAbort);
             el.meta.textContent = '';
             el.actions.hidden = true;
             showSkeleton();
@@ -1004,6 +1173,8 @@
                 const response = await fetch('/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    // signal 必须传进去，否则 abort() 无法中断这次等待
+                    signal: myRequest ? myRequest.signal : undefined,
                     body: JSON.stringify({
                         prompt: prompt,
                         max_tokens: maxTokens,
@@ -1030,6 +1201,7 @@
                 }
 
                 showResult(data.text);
+                lastResult = data.text;   // 供"中止回退"用：记录刚渲染成功的结果
                 const parts = [];
                 // 耗时用服务端实测值（前端 Date.now 含网络往返/排队，仅供参考）
                 parts.push(typeof data.elapsed_ms === 'number'
@@ -1072,24 +1244,124 @@
                 // 既看不出是 max_tokens 也看不出单位 → 改成带单位、不致误解的写法。
                 parts.push('t' + temp + ' · p' + top_p + ' · r' + rep + ' · 最多 ' + maxTokens + ' token');
                 el.meta.textContent = parts.join(' · ');
+                lastMetaText = el.meta.textContent;   // 与 lastResult 成套保存，供中止回退
                 // 悬停解释缩写与字数口径（只设 title 属性，不碰任何视觉样式）
                 el.meta.title = 't=温度 · p=top_p · r=重复惩罚 · 「最多 N token」= 本次请求的生成长度上限\n'
                     + '字数按字符计（不是 token）：新增 = 本次新生成的文字，全文 = 新增 + 你输入的开头';
+                lastMetaTitle = el.meta.title;
                 el.actions.hidden = false;
+
+                // 历史记录：只有"完整成功"的这一次生成才入库。
+                // ⚠️ 中止（AbortError）与各 4xx/5xx 都在上面 return / 走了别的分支，
+                //    永远到不了这一行 → 半截/失败的结果不会污染历史。
+                pushHistory(prompt, data.text, {
+                    temperature: temp, top_p: top_p,
+                    repetition_penalty: rep, max_tokens: maxTokens,
+                });
+                updateContinueBtn();   // 有完整结果了 → 「接着写」可用
 
                 // 生成完成后把视线带到结果开头（长文时用户不用自己找）
                 scrollToReading();
             } catch (e) {
-                // 只有真正的网络层失败才到这里（后端 4xx/5xx 已在上面处理）
-                showError('请求失败：' + (e && e.message ? e.message : '无法连接服务端'),
-                          '请确认后端进程还在运行（python app/server.py），然后重试。');
-                el.meta.textContent = '';
-                toast('网络错误', 'err');
+                // ★ 中止必须与真正的网络失败分开处理：
+                //   AbortError 是**用户主动操作**（点了「停止等待」），不是故障，
+                //   所以绝不显示"请求失败/网络错误"，也不写错误态，
+                //   只把阅读区恢复到可用状态 + 一句如实说明。
+                if (e && e.name === 'AbortError') {
+                    restoreAfterAbort();
+                    // 提到「服务端可能仍在完成」：只中止了前端等待，后端那次推理照旧在算
+                    toast('已停止等待（服务端可能仍在完成本次请求）');
+                } else {
+                    // 只有真正的网络层失败才到这里（后端 4xx/5xx 已在上面处理）
+                    showError('请求失败：' + (e && e.message ? e.message : '无法连接服务端'),
+                              '请确认后端进程还在运行（python app/server.py），然后重试。');
+                    el.meta.textContent = '';
+                    toast('网络错误', 'err');
+                }
             } finally {
-                el.genBtn.disabled = false;
-                el.genBtn.textContent = '开始续写';
-                el.resetBtn.disabled = false;
+                // 状态复位（中止 / 成功 / 失败都要走这里 → 按钮总会恢复可用）。
+                // ⚠️ 只在"本次请求"仍是当前 inflight 时才清空：用户中止后立刻重新生成时，
+                //    inflight 已被新请求的 controller 覆盖，这里不能把它置空、
+                //    更不能覆盖新请求的 UI 状态（genLocked / 按钮文案 / 停止按钮可见性）。
+                if (inflight === myRequest) {
+                    inflight = null;
+                    genLocked = false;
+                    setHidden(el.abortRow, true);
+                    el.abortBtn.disabled = true;
+                    el.genBtn.disabled = false;
+                    el.genBtn.textContent = '开始续写';
+                    el.resetBtn.disabled = false;
+                    // 中止后若还留着上次结果 → 「接着写」重新可用（有起点才能续）
+                    updateContinueBtn();
+                }
             }
+        }
+
+        // ---------------------------------------------------------------
+        // 连续续写（「接着写」）
+        // ---------------------------------------------------------------
+        // 用户意图：写完一段，最自然的动作是"接着往下写"，而不是只能复制或清空。
+        // 做法：把**当前全文**接回输入框，立刻再生成一段 → 下一轮的 prompt =
+        //       上一轮的全文，于是可以一段接一段地滚下去。
+        //
+        // ★★★ 这条链子**依赖**后端的一个"截断"行为，改之前务必读懂 ★★★
+        //   model/generation.py:33   prompt_ids = list(prompt_ids[-gpt.block_size:])
+        //   —— 超过 block_size（本机 512）的 prompt 会被**静默砍掉头部、只留尾部**。
+        //   连续续写两三轮后 prompt 必然远超 512，于是每次真正进模型的只有最近 512 个
+        //   token。这**正好是我们要的**：接着往下写靠的是上下文的尾部（语气的惯性、
+        //   刚刚发生的事），尾窗足够；反过来，把尾巴丢掉才会写得驴唇不对马嘴。
+        //   ⚠️ 所以这**不是丢数据的 bug，不要去"修复"它**（比如改成拒绝超长输入、
+        //      或者偷偷把输入截短再发）—— 那等于把连续续写直接做废。
+        //   必须分清两件事：**输入框里是全文**（用户看得见的完整文本，也是历史记录里
+        //   存的那一份），被截断的只是"模型这一轮能看到的部分"。
+        function continueWriting() {
+            if (genLocked) return;                       // 防重入：与「开始续写」同一把锁
+            if (lastResult === null) {                   // 没有上一轮结果 = 没有续写起点
+                toast('还没有可续写的正文');
+                return;
+            }
+
+            el.prompt.value = lastResult;                // ① 全文接回输入框（可见内容同步更新）
+            checkPrompt();                               // ② 计数 / 上限 / 超限提示重算
+
+            // ★ 超长提示怎么处理（本次最需要判断力的地方）：
+            //   checkPrompt() 会算出"输入 780 字 > 上下文 512 字"，技术上完全正确；
+            //   但对"点了接着写"的用户来说，"超出部分会被截断/前面的内容会被丢弃"
+            //   读起来像**我们把他刚写的字弄丢了**。所以这里在它之后覆写成一句**如实**的
+            //   说明：字一个都没丢（此刻就在输入框里、上一轮还在历史里），被限制的只是
+            //   "模型这一轮能看到多远" —— 连带说明这一次的结果会从那段尾部开始。
+            //   ⚠️ 绝不为了让提示消失而偷偷缩短输入 —— 那是在骗用户。
+            const limit = (MODEL && MODEL.block_size) ? MODEL.block_size : null;
+            const len = el.prompt.value.length;
+            if (limit && len > limit) {
+                // checkPrompt() 刚刚按既有规则收缩过生成长度时（maxHint 上的 clamp-note），
+                // 必须一并说明 —— 否则用户会奇怪"为什么这次只写了这么一小段"。
+                const clamped = !!(el.maxHint && el.maxHint.classList.contains('clamp-note'));
+                const budgetNote = clamped
+                    ? '另外：生成长度已按既有规则收缩到 ' + el.maxTokens.value + ' token'
+                      + '（开头越长、剩下的生成预算越少）；想一次写长一点，可以先把输入删短一些。'
+                    : '';
+                showPromptMsg('⚠️ 已把全文 ' + len + ' 字接回输入框（连续续写就是这样工作的）。'
+                              + '模型这一轮只看**最后 ' + limit + ' token**（中文大致 1 字 ≈ 1 token）：'
+                              + '这是上下文窗口的硬限制，不是把字弄丢了 —— 全文此刻就在输入框里，'
+                              + '但这一次的结果会从那段尾部开始，前面约 ' + Math.max(0, len - limit)
+                              + ' 字不会出现在结果里（上一轮的完整正文仍在历史记录里）。'
+                              + budgetNote, 'length');
+            } else if (limit) {
+                showPromptMsg('已把全文 ' + len + ' 字接回输入框，这次接着往下写。', 'length');
+            }
+
+            // 光标与视口都落到末尾：用户一眼就能看到"续写的起点"是全文的结尾
+            el.prompt.setSelectionRange(len, len);
+            el.prompt.scrollTop = el.prompt.scrollHeight;
+            generate();                                  // ③ 立即生成下一段
+        }
+
+        // 「接着写」的可用性：必须有**上一轮完整结果**，且当前没有请求在飞。
+        // （首次进入 / 结果被清空 / 生成进行中 → disabled；中止后若仍有上次结果 → 可用）
+        function updateContinueBtn() {
+            if (!el.continueBtn) return;
+            el.continueBtn.disabled = genLocked || lastResult === null;
         }
 
         // ---------------------------------------------------------------
@@ -1158,6 +1430,14 @@
             showEmpty();
             el.meta.textContent = '';
             el.actions.hidden = true;
+            // ★ 清空 = 用户明确丢弃这份结果 → 连"中止回退"用的快照一起清掉。
+            //   否则清空后再发一次请求、中途点「停止等待」，restoreAfterAbort() 会把
+            //   刚被清掉的旧正文又"复活"出来（历史遗留行为，顺手修掉）。
+            // ★ 清空**只影响阅读区**：历史记录是独立的一份，照旧保留（见报告里的取舍）。
+            lastResult = null;
+            lastMetaText = '';
+            lastMetaTitle = '';
+            updateContinueBtn();
             el.readBody.scrollTop = 0;
         }
 
@@ -1199,12 +1479,223 @@
 
         el.genBtn.addEventListener('click', generate);
         el.resetBtn.addEventListener('click', resetAll);
+        el.abortBtn.addEventListener('click', abortGenerate);
         el.copyBtn.addEventListener('click', copyResult);
         el.clearBtn.addEventListener('click', clearResult);
+        el.continueBtn.addEventListener('click', continueWriting);
+        el.historyClearBtn.addEventListener('click', clearHistory);
+
+        // ---------------------------------------------------------------
+        // 历史记录（localStorage）
+        // ---------------------------------------------------------------
+        // 目的：刷新页面不再"几百字全没了"。
+        // 契约：只碰浏览器本地存储，**不改后端、不改 /generate 的字段**。
+        //
+        // ★ 可用性只探测**一次**（不是每次操作都 try）：无痕模式、被禁用的
+        //   localStorage、企业策略、配额为 0 都会让访问直接抛异常。探测失败 →
+        //   整体降级（如实说明 + 只在当前页面内保留内存列表），
+        //   绝不每次点击都抛一次异常。
+        const HISTORY_KEY = 'minigpt_history_v1';   // ★ 带版本号：以后改结构就换 key
+        const HISTORY_MAX = 20;                     // 最多 20 条，超了丢最旧的
+        const HISTORY_TITLE_CHARS = 14;             // 标题取开头十几个字
+
+        function detectStorage() {
+            try {
+                const probe = '__minigpt_probe__';
+                window.localStorage.setItem(probe, '1');
+                window.localStorage.removeItem(probe);
+                return window.localStorage;
+            } catch (e) {
+                return null;          // 不可用。调用方一律先判 null，别再抛
+            }
+        }
+        let storage = detectStorage();   // null = 本浏览器不可用
+        let history = [];                // 内存里的那一份（storage 挂了也还能用）
+        let historyWarned = false;       // 写失败只提示一次，不刷屏
+
+        // 单条记录的形状校验：旧版本格式 / 被手改过 → 直接丢掉这一条
+        function isHistoryEntry(x) {
+            return !!x && typeof x === 'object'
+                && typeof x.ts === 'number' && isFinite(x.ts)
+                && typeof x.prompt === 'string' && typeof x.result === 'string';
+        }
+
+        // 读取：JSON.parse 必须在 try 里 —— 手改过的脏数据、旧版本格式、读取异常，
+        // 一律当"空历史"，**绝不把异常抛给首页初始化**（否则整个页面会白屏）。
+        function loadHistory() {
+            if (!storage) return [];
+            try {
+                const raw = storage.getItem(HISTORY_KEY);
+                if (!raw) return [];
+                const arr = JSON.parse(raw);
+                if (!Array.isArray(arr)) return [];
+                return arr.filter(isHistoryEntry).slice(0, HISTORY_MAX);
+            } catch (e) {
+                return [];
+            }
+        }
+
+        // 写入：setItem 是最可能抛的地方（配额满 / 隐私模式中途失效）。
+        // 失败不抛、也不静默：第一次给一句如实提示，之后整体降级为"仅本次会话"。
+        function saveHistory() {
+            if (!storage) return;
+            try {
+                storage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, HISTORY_MAX)));
+            } catch (e) {
+                storage = null;       // 一次性降级：之后不再尝试写/读
+                if (!historyWarned) {
+                    historyWarned = true;
+                    toast('本地存储不可用，历史只保留在当前页面（刷新会丢）', 'err');
+                }
+            }
+        }
+
+        function pad2(n) { return String(n).padStart(2, '0'); }
+
+        // 时间戳 → 紧凑显示：今天的只写 HH:mm，更早的写 MM-DD HH:mm
+        function fmtTime(ts) {
+            const d = new Date(ts);
+            if (isNaN(d.getTime())) return '';
+            const now = new Date();
+            const sameDay = d.getFullYear() === now.getFullYear()
+                && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+            const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+            return sameDay ? hm : pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + hm;
+        }
+
+        // 标题 = 开头的 prompt 压成一行取前十几个字（prompt 为空时退用 result）
+        function historyTitle(e) {
+            const raw = (e.prompt || e.result || '').replace(/\s+/g, ' ').trim();
+            if (!raw) return '（空）';
+            return raw.length > HISTORY_TITLE_CHARS
+                ? raw.slice(0, HISTORY_TITLE_CHARS) + '…' : raw;
+        }
+
+        // 渲染：★ 用户/模型文本**一律走 textContent**，绝不用 innerHTML
+        function renderHistory() {
+            const n = history.length;
+            // 收起时那一行的计数：每次数据变化都要刷新
+            el.historySum.textContent = storage
+                ? '历史记录 (' + n + ')'
+                : '历史记录 (' + n + ') · 存储不可用';
+
+            if (!storage) {
+                el.historyNote.textContent = '⚠️ 本浏览器不可用本地存储（隐私模式 / 被禁用 / 配额满）：'
+                    + '历史只保留在当前页面，刷新后会丢。'
+                    + (n ? '下面这些条目仍可点开恢复。' : '');
+            } else if (n === 0) {
+                el.historyNote.textContent = '生成成功后会自动存一条（最多 ' + HISTORY_MAX
+                    + ' 条），只存在这台浏览器里。';
+            } else {
+                el.historyNote.textContent = '点任意一条可恢复它的正文、开头与参数。最多 '
+                    + HISTORY_MAX + ' 条，只存在这台浏览器里。';
+            }
+
+            el.historyList.textContent = '';      // 清空子节点（不是 innerHTML）
+            history.forEach((e, i) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'history-item';
+                b.title = '恢复这条记录（' + fmtTime(e.ts) + '）';
+
+                const t = document.createElement('span');
+                t.className = 'history-item-title';
+                t.textContent = historyTitle(e);   // ★ 模型输出永不进 innerHTML
+
+                const d = document.createElement('span');
+                d.className = 'history-item-time';
+                d.textContent = fmtTime(e.ts);
+
+                b.appendChild(t);
+                b.appendChild(d);
+                b.addEventListener('click', () => restoreHistory(i));
+                el.historyList.appendChild(b);
+            });
+            setHidden(el.historyFoot, n === 0);    // 没条目就不显示「清除历史」
+        }
+
+        // 入库：只在**完整成功**的一次生成后调用（中止 / 报错都到不了这里）
+        function pushHistory(prompt, result, params) {
+            // 同一份 prompt + result 已存在 → 只更新时间并提到最前，不堆重复条目
+            const dup = history.findIndex((x) => x.prompt === prompt && x.result === result);
+            if (dup >= 0) history.splice(dup, 1);
+            history.unshift({ ts: Date.now(), prompt: prompt, result: result, params: params });
+            if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;   // 丢最旧的
+            saveHistory();
+            renderHistory();
+        }
+
+        // 恢复一条：prompt + result + 四个参数**一起**恢复。
+        // ★ 只恢复 prompt 是不够的 —— 否则用户点「接着写」时用的是当前滑条上的
+        //   新参数，而这条正文是旧参数生成的，会对不上、很困惑。
+        function restoreHistory(idx) {
+            const e = history[idx];
+            if (!e) return;
+            if (genLocked) { toast('正在续写，等这次结束再恢复'); return; }
+
+            el.prompt.value = e.prompt;            // ① 开头
+            // ★ 顺序有讲究：先把开头写进去并**立刻**重算上限，再恢复参数。
+            //   否则上一次长输入把 max_tokens 滑条的 max 收缩到 30 之后，这里拿
+            //   旧上限去校验"要恢复的 100"会判成越界 → 参数被静默丢掉。
+            checkPrompt();
+            const p = (e.params && typeof e.params === 'object') ? e.params : {};
+            // 数值合法且在当前滑条量程内才写入（旧格式 / 被手改过 → 保留当前值，不写 NaN）
+            const setSlider = (node, v) => {
+                if (!node || typeof v !== 'number' || !isFinite(v)) return;
+                const min = parseFloat(node.min), max = parseFloat(node.max);
+                if (v < min || v > max) return;
+                node.value = String(v);
+            };
+            setSlider(el.temp, p.temperature);     // ② 四个参数
+            setSlider(el.topp, p.top_p);
+            setSlider(el.rep, p.repetition_penalty);
+            // ⚠️ 生成长度放最后：checkPrompt() → updateGenCeiling() 会按**恢复后的开头长度**
+            //    再夹紧一次 —— 恢复出来的 max_tokens 仍可能被合理地压低（不是丢数据）
+            setSlider(el.maxTokens, p.max_tokens);
+            syncSliders();
+            checkPrompt();
+
+            showResult(e.result);                  // ③ 正文（必须一起恢复，不能只剩开头）
+            lastResult = e.result;
+            // 历史里没存耗时 / token 数 → 这里**如实说不显示**，不编一个数字出来。
+            // 参数也可能缺（旧版本记录）→ 缺就写"参数未知"，不打印 undefined。
+            const pv = (v) => (typeof v === 'number' && isFinite(v)) ? String(v) : null;
+            const pParts = [];
+            if (pv(p.temperature)) pParts.push('t' + pv(p.temperature));
+            if (pv(p.top_p)) pParts.push('p' + pv(p.top_p));
+            if (pv(p.repetition_penalty)) pParts.push('r' + pv(p.repetition_penalty));
+            if (pv(p.max_tokens)) pParts.push('最多 ' + pv(p.max_tokens) + ' token');
+            el.meta.textContent = '历史记录 · ' + fmtTime(e.ts) + ' · '
+                + (pParts.length ? '参数 ' + pParts.join(' · ') : '参数未知（这条来自旧版本的记录）');
+            el.meta.title = '这是从本地历史恢复的正文。存的时候只留了正文 / 开头 / 参数，'
+                + '没有存耗时与 token 数，所以细栏里不显示它们。';
+            lastMetaText = el.meta.textContent;
+            lastMetaTitle = el.meta.title;
+            el.actions.hidden = false;
+            updateContinueBtn();
+            el.readBody.scrollTop = 0;
+            toast('已恢复这条记录', 'ok');
+        }
+
+        // 清除历史：清的是**浏览器本地存储**，与阅读区的「清空」互不影响
+        function clearHistory() {
+            history = [];
+            if (storage) {
+                try { storage.removeItem(HISTORY_KEY); } catch (e) { /* 删不掉也不崩 */ }
+            }
+            renderHistory();
+            toast('已清除历史记录', 'ok');
+        }
+
+        // 初始化：读一次历史（脏数据 → 空历史）。storage 不可用时 UI 照常初始化，
+        // 只是文案改成如实说明 —— 不藏起入口，用户至少知道"为什么这里没有历史"。
+        history = loadHistory();
+        renderHistory();
 
         // ===== 初始化 =====
         syncSliders();
         checkPrompt();
+        updateContinueBtn();   // 首次进入：没有结果 → 「接着写」禁用
         loadModelInfo();
     })();
     </script>
