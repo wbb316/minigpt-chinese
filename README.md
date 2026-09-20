@@ -158,16 +158,19 @@ minigpt-chinese/
 ├── train/
 │   └── train.py        # 主训练脚本（resume / lr-scheme / AMP 门控 / grad-accum / 精确 tokens_seen）
 ├── app/
-│   ├── server.py       # FastAPI 后端（默认加载 v3_beta 100M；头数由 RoPE head_dim 自动推断）
-│   └── templates/index.html  # 前端（温度/top_p/重复惩罚滑块）
-├── test/               # pytest：124 个用例（BPE 等价性 / encode 等价性 / 模型 / 数据集 / perf_bench）
-├── benchmark/          # 性能基准（perf_bench.py + performance_results.csv）
+│   ├── server.py       # FastAPI 后端（默认加载 v3_gamma 150M；架构由 RoPE head_dim 自动推断；
+│   │                   #   GET /model-info 暴露当前实际加载的模型规格与是否走了回退）
+│   └── templates/index.html  # 前端（非模板引擎，open() 原样返回；解码参数滑块 / 模型信息条 / 暗色模式）
+├── test/               # pytest：124 个用例（BPE 与 encode 等价性 / 模型与注意力 / RoPE / FFN 变体 /
+│                       #   数据集与采样器 / 过拟合冒烟 / perf_bench 解析与变体矩阵）
+├── benchmark/          # 性能基准（perf_bench.py + performance_results.csv + performance_summary.csv）
 ├── generate.py         # 生成（默认 v2 35M）+ KV cache 一致性验证
 ├── visualize_attention.py  # 注意力热力图
 ├── result/             # 模型产物归档（按 参数量+token数 分子目录；*.pt/*.pkl 不入 git）
 │   ├── 35M参数+998Mtokens/      # v2 35M（E1+E2 完整）
 │   ├── 50M参数+998Mtokens/      # v2 50M（strict 参数对照基准）
-│   ├── 100M参数v3+2Btokens/     # v3_beta 100M（当前默认推理模型）
+│   ├── 100M参数v3+2Btokens/     # v3_beta 100M
+│   ├── 150M参数v3+1.5Btokens/   # v3_gamma 150M ← 当前默认推理模型（目录名为拉取时旧名，实为 2.93B token，详见 app/server.py 注释）
 │   ├── 20M参数+416Mtokens/      # 20M 最终（① 空间）
 │   └── ...
 ├── log/                # 训练日志归档（按实验分子目录：step/val 历史 CSV、run_config）
@@ -192,11 +195,22 @@ pip install -r requirements.txt
 # 测试
 python -m pytest test/ -v
 
-# 生成测试（默认加载 v2 35M；用 v3_beta 100M 就传 --ckpt --tokenizer）
+# 生成测试（默认加载 v2 35M；用 v3_gamma 150M / v3_beta 100M 就传 --ckpt --tokenizer）
 python generate.py --demo
 
-# Web demo（默认加载 v3_beta 100M；浏览器打开 http://127.0.0.1:8000）
+# Web demo（默认加载 v3_gamma 150M，20L/768d/12H；浏览器打开 http://127.0.0.1:8000）
 python app/server.py
+
+# 页面能力：模型信息条（显示当前实际加载的规格，权重缺失走回退时会显式提示）
+#           解码参数四个滑块（温度 / top_p / 重复惩罚 / 生成长度）
+#           暗色模式（跟随系统）· Cmd/Ctrl+Enter 提交 · 页内 toast · 剪贴板降级
+# 接口：GET /health · GET /model-info（当前模型规格）· POST /generate
+#       POST /generate 请求体字段（prompt/max_tokens/temperature/top_p/repetition_penalty）
+#       与历史契约一致，仅新增响应字段 elapsed_ms / new_tokens
+
+# 想用 100M v3_beta 或别的存档：显式传参覆盖默认即可
+python app/server.py --ckpt result/100M参数v3+2Btokens/checkpoint_best.pt \
+                     --tokenizer result/100M参数v3+2Btokens/tokenizer_best.pkl
 
 # 指定其他模型（v3_alpha 50M：rope+新init，9 头）
 python generate.py --ckpt log/50M参数_v3_alpha+998Mtokens/checkpoint_best.pt \
@@ -209,8 +223,13 @@ python generate.py --ckpt log/50M参数_v3_alpha+998Mtokens/checkpoint_best.pt \
 
 ## 🧪 测试
 
-**124 个用例全部通过**：BPE（训练 fast/legacy 等价性、encode 等价性 15 项）、编码管线（分片一致性、memmap 切片）、
-模型 / 注意力 / RoPE / FFN 变体、数据集、采样器、过拟合冒烟、perf_bench 结果 CSV 规范化等。
+**124 个用例**：BPE（训练 fast/legacy 等价性、encode 等价性 15 项）、编码管线（分片一致性、memmap 切片）、
+模型 / 注意力 / RoPE / FFN 变体、数据集、采样器、过拟合冒烟、perf_bench（计时精度 / telemetry 窗口 /
+变体矩阵 / 100M 配置档）等。
+
+> ⚠️ **平台差异**：`test/test_encode_equivalence.py::test_real_webnovel_equivalence` 用 `n_procs=4`
+> 多进程编码，**在禁止多进程命名管道的受限沙箱里会 `PermissionError`**（此时为 123 passed / 1 failed，
+> 测试逻辑本身无误）。普通 Windows / Linux 环境下 124 个全过。
 
 ## 📅 Roadmap
 

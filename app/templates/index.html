@@ -4,207 +4,1087 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MiniGPT-Chinese · 中文续写</title>
+    <meta name="color-scheme" content="light dark">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #fbcfe8 100%);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        /* 响应式：手机自适应 */
-        .container {
-            width: 90%;
-            max-width: 620px;
-            margin: 20px auto;
-            background: rgba(255,255,255,0.92);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            padding: 40px 30px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.1);
-        }
-        h1 { font-size: 26px; color: #1f2937; text-align: center; margin-bottom: 8px; }
-        .subtitle { text-align: center; color: #9ca3af; font-size: 14px; margin-bottom: 24px; }
+        /* ============================================================
+           设计语言：文学阅读风（衬线 / 米色书页 / 赭墨单强调色）
+           零依赖：无框架、无 CDN、无 webfont、无外部图片。
+           所有质感用原生 CSS + 一行 SVG 噪点 data-URI 实现。
+           ============================================================ */
+        :root {
+            /* ---- 配色：暖中性 + 单一赭墨强调（粉紫色系已彻底移除） ---- */
+            --paper:        #f7f4ef;   /* 页面底：暖米 */
+            --sheet:        #fffdf9;   /* 阅读面：纸 */
+            --sheet-2:      #fdfaf4;   /* 纸的次层 / 渐变末 */
+            --sheet-edge:   #eae4da;   /* 纸的 1px 边 */
+            --ink:          #2b2825;   /* 正文（非纯黑） */
+            --ink-2:        #57514a;   /* 次要文字 */
+            --ink-3:         #6e6759;   /* 弱化文字。定稿 #736c62，这里压深一档：
+                                            加了纸面颗粒后 #736c62 在颗粒深处会掉到 4.2:1，
+                                            压到 #6e6759 后实测 4.58:1（颗粒 p99 处）仍达 AA */
+            --accent:       #8c5a3c;   /* 赭墨：唯一强调色 */
+            --accent-soft:  rgba(140, 90, 60, .10);
+            --accent-2:     #5f7a5a;   /* 松绿：仅成功态 */
+            --rule:         #e3ddd2;   /* 细线 */
+            --warn:         #9a6b1f;   /* 回退提示 / 错误态 */
+            --warn-soft:    rgba(154, 107, 31, .09);
+            --danger:       #9c3b2e;   /* 空输入红边（偏砖红，不刺眼） */
 
+            /* ---- 实底控件上的文字色。
+                   亮色下用纸白；暗色下赭墨/松绿都变亮了，纸白会掉到 3:1 以下，
+                   所以在暗色块里换成深墨（见下方 @media）。---- */
+            --on-accent:    #fffdf9;   /* 对 --accent 5.7:1 */
+            --on-warn:      #fffdf9;   /* 对 --danger 6.7:1 */
+            --on-ok:        #fffdf9;   /* 对 --accent-2 4.7:1 */
+
+            /* ---- 排版 ---- */
+            --font-ui:    -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+            --font-serif: Georgia, Cambria, "Times New Roman", "Songti SC", "SimSun", serif;
+
+            /* ---- 尺度 ---- */
+            --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+            --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+            --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+            --shadow-soft: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 24px rgba(0, 0, 0, .05);
+            --shadow-toast: 0 8px 24px rgba(0, 0, 0, .16);
+
+            /* ---- 纸面：极淡双渐变 + 极淡噪点 ----
+               ⚠️ 三个坑，都踩过：
+               1) data-URI 里的 '#' 必须写成 %23，否则整条声明被截断；
+               2) feTurbulence 输出的噪声是**全幅**的（实测 alpha 均值 0.29、
+                  峰值 0.53），直接铺在纸色上等于盖了一层灰纱，会把正文对比度
+                  打到 3.7:1、弱化文字打到 1.3:1。所以必须再用很低的 opacity
+                  压淡 → 噪点单独做成 --grain 图层，由 --grain-opacity 控制，
+                  而不是拼进 --sheet-bg 里。
+               3) SVG 里 rect 只取噪声的 alpha 通道（不填色）→ 颗粒是**纯中性**的，
+                  不会把暖米纸拉成灰绿。 */
+            --noise: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+            --grain: var(--noise);            /* 单独一层的噪点，供 body::before 使用 */
+            --grain-opacity: .10;             /* 实测：p50 拉动 7/255、p99 13/255 —— 看得见纸感，
+                                                 又不至于把 --ink-3 的对比度压到 AA 以下 */
+            --sheet-bg: linear-gradient(160deg, var(--sheet) 0%, var(--sheet-2) 100%);
+        }
+
+        /* ---- 暗色模式：只覆盖 token（暖黑纸，不是蓝黑） ---- */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --paper: #171512;  --sheet: #1e1b17;  --sheet-2: #221e19;
+                --sheet-edge: #332e27;  --ink: #ece6dc;  --ink-2: #b9b0a3;
+                --ink-3: #978f82;   /* 同亮色理由：定稿 #8f8779 在暗色颗粒上仅 4.4:1 */
+                --accent: #c98a5e;  --accent-soft: rgba(201, 138, 94, .14);
+                --accent-2: #8fae86;  --rule: #332e27;  --warn: #d9a441;
+                --warn-soft: rgba(217, 164, 65, .12);  --danger: #d98570;
+                /* 暗色下实底变亮 → 压字换成深墨，保住 AA */
+                --on-accent: #1a1512;  --on-warn: #1a1512;  --on-ok: #1a1512;
+                /* 暗色颗粒：同一条纯 alpha 噪声叠在深底上会变成**亮**颗粒，
+                   所以透明度比亮色略高一点点才看得出纸感，同时保住 ink-3 的 AA */
+                --grain-opacity: .12;
+                --shadow-soft: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .38);
+                --shadow-toast: 0 8px 24px rgba(0, 0, 0, .55);
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* page 底色放 html 上：body 自己**不带任何背景**，于是 body::before
+           里 z-index:-1 的纸面层一定落在底色之上 —— 否则会被 body 的
+           不透明背景整个盖掉（第一版就踩了这个坑，颗粒完全看不见）。 */
+        html { background-color: var(--paper); }
+
+        body {
+            font-family: var(--font-ui);
+            min-height: 100vh;
+            color: var(--ink);
+            padding: var(--sp-5) var(--sp-5) 48px;
+            -webkit-font-smoothing: antialiased;
+        }
+        /* 全页纸面：一层里同时给「极淡双渐变」和「极淡噪点」。
+           合成顺序 = 底色 → 颗粒 → 渐变（渐变不透明，压在颗粒上），
+           相当于给纸色蒙了一层颗粒；整层再统一压到很低的 opacity，
+           既得到纸感，又不会把纸面拉暗、拖垮文字对比度。 */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            pointer-events: none;
+            background-image: var(--sheet-bg), var(--grain), var(--grain);
+            background-repeat: no-repeat, repeat, repeat;
+            background-size: cover, 300px 300px, 300px 300px;
+            background-position: center, 0 0, 149px 151px;   /* 第二层错位半块去打散规则感 */
+            opacity: var(--grain-opacity);
+        }
+        ::selection { background: var(--accent-soft); }
+
+        /* ================= 页头（跨整宽） ================= */
+        .page-head {
+            max-width: 1120px;
+            margin: 0 auto var(--sp-5);
+            padding-bottom: var(--sp-4);
+            border-bottom: 1px solid var(--rule);
+        }
+        h1 {
+            font-family: var(--font-serif);
+            font-size: 28px;
+            font-weight: 400;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+        .subtitle {
+            margin-top: 6px;
+            font-family: var(--font-serif);
+            font-size: 14px;
+            line-height: 1.7;
+            color: var(--ink-3);
+        }
+
+        /* ================= 两栏骨架 ================= */
+        .layout {
+            max-width: 1120px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 28px;
+            align-items: start;
+        }
+        @media (min-width: 1024px) {
+            .layout { grid-template-columns: 360px minmax(0, 1fr); gap: 40px; }
+            /* 宽屏滚动时参数保持可见 */
+            .controls { position: sticky; top: 24px; }
+        }
+
+        /* ================= 控制区 ================= */
+        .controls { display: flex; flex-direction: column; gap: var(--sp-5); }
+
+        /* 分区小标题：小号 + 字距（不用粗体大字） */
+        .sec-title {
+            font-family: var(--font-ui);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: .14em;
+            color: var(--ink-3);
+            margin-bottom: var(--sp-3);
+        }
+
+        .field-label {
+            display: block;
+            font-size: 13px;
+            color: var(--ink-2);
+            margin-bottom: 6px;
+        }
         textarea {
             width: 100%;
-            height: 100px;
-            border: 2px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 14px;
+            height: 132px;
+            padding: 14px 15px;
+            font-family: var(--font-serif);
             font-size: 16px;
-            font-family: inherit;
+            line-height: 1.85;
+            color: var(--ink);
+            /* 自带实底纸面 → 把全页那层颗粒挡在外面；文字落在这块干净纸面上，
+               对比度可以按纯 --sheet 算（见报告里的对比度实测）。 */
+            background-image: var(--sheet-bg);
+            background-repeat: no-repeat;
+            background-size: cover;
+            border: 1px solid var(--sheet-edge);
+            border-radius: var(--r-md);
             resize: vertical;
-            transition: border-color 0.3s;
-            background: #fafafa;
+            transition: border-color .2s, box-shadow .2s;
         }
-        textarea:focus { outline: none; border-color: #ec4899; background: #fff; }
+        textarea::placeholder { color: var(--ink-3); opacity: .75; }
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        /* 空输入校验：内联红边 + 下方提示（替代 alert） */
+        textarea.invalid { border-color: var(--danger); }
+        textarea.invalid:focus { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(156, 59, 46, .14); }
 
-        .controls { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
-        .temp-label { font-size: 13px; color: #6b7280; white-space: nowrap; width: 64px; }
-        input[type="range"] { flex: 1; accent-color: #ec4899; }
-        .temp-value { font-size: 13px; color: #ec4899; font-weight: bold; width: 42px; text-align: center; }
-        .hint { font-size: 12px; color: #9ca3af; margin: 2px 0 4px; text-align: center; }
+        .field-msg { min-height: 17px; margin-top: 6px; font-size: 12px; line-height: 1.65; color: var(--ink-3); }
+        .field-msg.err { color: var(--danger); }
+        .counter { margin-top: 2px; text-align: right; font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .counter.warn { color: var(--warn); font-weight: 600; }
 
-        button {
-            width: 100%;
-            padding: 14px;
-            font-size: 17px;
+        /* ---- 滑条 ---- */
+        .slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+        .slider + .slider { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--rule); }
+        .slider-label { font-size: 13.5px; color: var(--ink-2); }
+        /* 墨色小徽章：accent-soft 底 + accent 字（不是裸数字） */
+        .badge {
+            min-width: 50px;
+            padding: 2px 9px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
             font-weight: 600;
-            border: none;
-            border-radius: 12px;
+            line-height: 1.55;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+        .slider-hint { grid-column: 1 / -1; font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
+
+        /* 自绘轨道与 thumb（原生外观整体替换）
+           --pct = 已填充比例，由 JS 在 syncSliders() 里写入；此处给个初始声明 */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            grid-column: 1 / -1;
+            width: 100%;
+            height: 20px;
+            margin: 2px 0 0;
+            background: transparent;
             cursor: pointer;
-            background: linear-gradient(135deg, #ec4899, #f472b6);
-            color: white;
-            transition: opacity 0.2s, transform 0.1s;
+            accent-color: var(--accent);   /* 最后兜底 */
+            --pct: 50%;
         }
-        button:hover { opacity: 0.9; }
-        button:active { transform: scale(0.98); }
-        /* 禁用态（防连点） */
-        button:disabled { opacity: 0.6; cursor: not-allowed; pointer-events: none; }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px;
+            border-radius: 999px;
+            background: linear-gradient(var(--accent), var(--accent)) 0 50% / var(--pct, 50%) 4px no-repeat,
+                        var(--rule);
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px; height: 16px;
+            margin-top: -6px;
+            border-radius: 50%;
+            background: var(--sheet);
+            border: 2px solid var(--accent);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+        }
+        input[type="range"]::-moz-range-track {
+            height: 4px; border-radius: 999px; background: var(--rule);
+        }
+        input[type="range"]::-moz-range-progress {
+            height: 4px; border-radius: 999px; background: var(--accent);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--sheet);
+            border: 2px solid var(--accent);
+        }
+        input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 4px; }
 
-        /* 输出框：限制高度 + 滚动 + 保留换行 */
-        .result-box {
-            margin-top: 24px;
-            padding: 20px;
-            background: #fdf2f8;
-            border-radius: 12px;
-            border-left: 4px solid #ec4899;
-            min-height: 80px;
-            max-height: 320px;
+        /* ---- 按钮 ---- */
+        button {
+            font-family: var(--font-ui);
+            cursor: pointer;
+            transition: background .18s, border-color .18s, color .18s, transform .08s, opacity .18s;
+        }
+        .btn-primary {
+            width: 100%;
+            padding: 13px 18px;
+            border: 1px solid transparent;
+            border-radius: var(--r-md);
+            background: var(--accent);
+            color: var(--on-accent);
+            font-size: 15.5px;
+            font-weight: 600;
+            letter-spacing: .02em;
+        }
+        /* hover 微暗：用 filter 而不是 color-mix()，老浏览器也认 */
+        .btn-primary:hover:not(:disabled) { filter: brightness(.92); }
+        .btn-primary:active:not(:disabled) { transform: scale(.988); }
+        .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+        @media (prefers-color-scheme: dark) {
+            /* 暗色下"微暗"会糊掉，改成微亮 */
+            .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+        }
+
+        .btn-ghost {
+            padding: 9px 15px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            background: transparent;
+            color: var(--ink-2);
+            font-size: 12.5px;
+        }
+        .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .btn-ghost:active:not(:disabled) { transform: scale(.98); }
+        .btn-ghost:disabled { opacity: .5; cursor: not-allowed; }
+
+        /* 复制是阅读完之后最常用的动作 → 给一点赭墨分量，但仍小于主按钮 */
+        .btn-soft {
+            padding: 9px 16px;
+            border: 1px solid var(--accent);
+            border-radius: var(--r-sm);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12.5px;
+            font-weight: 600;
+        }
+        .btn-soft:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+        .btn-soft:active:not(:disabled) { transform: scale(.98); }
+        .btn-soft:disabled { opacity: .5; cursor: not-allowed; }
+
+        .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .row .grow { flex: 1; }
+        .kbd-hint { font-size: 11.5px; color: var(--ink-3); }
+        kbd {
+            font-family: var(--font-ui);
+            font-size: 10.5px;
+            padding: 1px 5px;
+            border: 1px solid var(--rule);
+            border-bottom-width: 2px;
+            border-radius: 4px;
+            background: var(--sheet);
+            color: var(--ink-2);
+        }
+
+        /* ---- 模型信息条 ---- */
+        .model-card {
+            padding: var(--sp-3) var(--sp-4);
+            background-image: var(--sheet-bg);
+            background-repeat: no-repeat;
+            background-size: cover;
+            border: 1px solid var(--sheet-edge);
+            border-radius: var(--r-md);
+            box-shadow: var(--shadow-soft);
+        }
+        .mc-head {
+            display: flex; align-items: flex-start; justify-content: space-between;
+            gap: var(--sp-2); flex-wrap: wrap; margin-bottom: 5px;
+        }
+        .mc-name { font-family: var(--font-serif); font-size: 14px; color: var(--ink); letter-spacing: -0.01em; }
+        .mc-device {
+            padding: 1px 9px;
+            border: 1px solid var(--rule);
+            border-radius: 999px;
+            color: var(--ink-3);
+            font-size: 10.5px;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+        .mc-arch { font-size: 11.5px; line-height: 1.75; color: var(--ink-2); }
+        .fallback-note {
+            margin-top: 10px;
+            padding: 9px 11px;
+            border: 1px solid var(--warn);
+            border-radius: var(--r-sm);
+            background: var(--warn-soft);
+            color: var(--warn);
+            font-size: 11.5px;
+            line-height: 1.7;
+        }
+
+        /* ================= 阅读区（书页） ================= */
+        .reading {
+            border-left: 1px solid var(--rule);   /* 书脊暗示，克制 */
+            padding-left: 28px;
+            min-width: 0;
+        }
+        @media (max-width: 1023px) {
+            .reading { border-left: none; padding-left: 0; border-top: 1px solid var(--rule); padding-top: var(--sp-5); }
+        }
+        .read-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: var(--sp-3); flex-wrap: wrap;
+            padding-bottom: 10px;
+            margin-bottom: var(--sp-4);
+            border-bottom: 1px solid var(--rule);
+        }
+        .read-meta {
+            font-size: 11.5px;
+            color: var(--ink-3);
+            line-height: 1.7;
+            font-variant-numeric: tabular-nums;
+        }
+        .read-body {
+            max-height: 60vh;
             overflow-y: auto;
-            line-height: 1.9;
-            color: #374151;
-            font-size: 15px;
-            white-space: pre-wrap;   /* 保留换行/缩进 */
-            word-wrap: break-word;
+            overflow-wrap: break-word;
+            scroll-behavior: smooth;
+            scrollbar-width: thin;
         }
-        .result-meta { margin-top: 8px; font-size: 12px; color: #9ca3af; text-align: right; }
-        .loading { color: #ec4899; }
-        .loading::after {
-            content: '…';
-            animation: dots 1.2s infinite;
-        }
-        @keyframes dots { 0%,20% {content:'';} 40% {content:'.';} 60% {content:'..';} 100% {content:'...';} }
+        .read-body::-webkit-scrollbar { width: 9px; }
+        .read-body::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+        .read-body::-webkit-scrollbar-track { background: transparent; }
 
-        .error { color: #dc2626; }
-        .result-actions { margin-top: 12px; display: flex; gap: 10px; }
-        .result-actions button { width: auto; padding: 8px 16px; font-size: 13px; background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
-        .result-actions button:hover { background: #e5e7eb; }
-        footer { text-align: center; margin-top: 24px; font-size: 12px; color: #d1d5db; }
+        /* 正文：衬线 17px / 行高 1.9 / 最大行宽 720px */
+        .article { max-width: 720px; font-family: var(--font-serif); font-size: 17px; line-height: 1.9; color: var(--ink); }
+        .article p { text-indent: 2em; margin: 0 0 1em; }
+        .article p:last-child { margin-bottom: 0; }
+        .article.error-text { color: var(--warn); }
+        .article.error-text p.err-what {
+            text-indent: 0;
+            padding: 12px 14px;
+            margin-bottom: .8em;
+            border-left: 3px solid var(--warn);
+            border-radius: 0 var(--r-sm) var(--r-sm) 0;
+            background: var(--warn-soft);
+            font-size: 15.5px;
+            line-height: 1.8;
+            font-family: var(--font-ui);
+        }
+        .article.error-text p.err-how { text-indent: 0; font-family: var(--font-ui); font-size: 13px; line-height: 1.85; color: var(--ink-2); }
+
+        /* 空态：一句引导语 + 两个可点的示例开头 */
+        .empty-state { max-width: 560px; padding: 26px 0 30px; }
+        .empty-state h2 {
+            font-family: var(--font-serif);
+            font-size: 21px;
+            font-weight: 400;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+        .empty-state > p { margin-top: 10px; font-family: var(--font-serif); font-size: 15px; line-height: 1.9; color: var(--ink-2); }
+        .examples { margin-top: 22px; display: flex; flex-direction: column; }
+        .examples-label { font-size: 10.5px; letter-spacing: .14em; color: var(--ink-3); margin-bottom: 8px; }
+        .example {
+            padding: 11px 14px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            font-family: var(--font-serif);
+            font-size: 15.5px;
+            line-height: 1.75;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: border-color .18s, color .18s, background .18s;
+        }
+        .example + .example { margin-top: 10px; }
+        .example:hover, .example:focus-visible {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+            outline: none;
+        }
+        .example::before { content: '「'; color: var(--ink-3); }
+        .example::after  { content: '」'; color: var(--ink-3); }
+
+        /* 加载态：骨架行 + 呼吸动画（替掉"模型正在思考…"） */
+        .skeleton { max-width: 720px; padding-top: 6px; }
+        .skeleton-label { font-size: 11.5px; letter-spacing: .1em; color: var(--ink-3); margin-bottom: 18px; }
+        .sk-line {
+            height: 11px;
+            margin-bottom: 18px;
+            border-radius: 3px;
+            background: var(--rule);
+            animation: sk-breathe 1.5s ease-in-out infinite;
+        }
+        @keyframes sk-breathe { 0%, 100% { opacity: .38; } 50% { opacity: .95; } }
+
+        /* ================= 页内 toast（替代 alert） ================= */
+        .toast-host {
+            position: fixed;
+            left: 50%;
+            bottom: 28px;
+            transform: translateX(-50%);
+            display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+            z-index: 999;
+            pointer-events: none;
+        }
+        .toast {
+            max-width: 88vw;
+            padding: 10px 18px;
+            border-radius: 999px;
+            background: var(--ink);
+            color: var(--sheet);
+            font-size: 13px;
+            text-align: center;
+            box-shadow: var(--shadow-toast);
+            animation: toast-in .22s ease-out;
+        }
+        .toast.err { background: var(--danger); color: var(--on-warn); }
+        .toast.ok  { background: var(--accent-2); color: var(--on-ok); }
+        .toast.hide { animation: toast-out .32s ease-in forwards; }
+        @keyframes toast-in  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+        @keyframes toast-out { to { opacity: 0; transform: translateY(8px); } }
+
+        .page-foot {
+            max-width: 1120px;
+            margin: var(--sp-6) auto 0;
+            padding-top: var(--sp-4);
+            border-top: 1px solid var(--rule);
+            text-align: center;
+            font-size: 11.5px;
+            color: var(--ink-3);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .read-body { scroll-behavior: auto; }
+            .toast, .toast.hide { animation: none; }
+            .sk-line { animation: none; opacity: .6; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🌸 MiniGPT-Chinese</h1>
-        <p class="subtitle">从零训练的中文续写模型 · 百合轻小说语料</p>
+    <header class="page-head">
+        <h1>MiniGPT-Chinese</h1>
+        <!-- 副标题：从 /model-info 动态填充 -->
+        <p class="subtitle" id="subtitle">从零训练的中文续写模型 · 正在读取模型信息…</p>
+    </header>
 
-        <textarea id="prompt" placeholder="输入开头，例如：我真的..."></textarea>
+    <div class="layout">
+        <!-- ==================== 控制区 ==================== -->
+        <aside class="controls">
+            <!-- 模型信息条：一眼看清当前加载了哪个权重；回退时显眼提示 -->
+            <section class="model-card" id="modelCard">
+                <div class="mc-head">
+                    <span class="mc-name" id="miName">模型信息加载中…</span>
+                    <span class="mc-device" id="miDevice" hidden></span>
+                </div>
+                <div class="mc-arch" id="miArch">正在从后端读取当前权重规格…</div>
+            </section>
 
-        <div class="hint">解码参数：温度越低越保守 · top_p 只保留高概率词 · 重复惩罚抑制复读</div>
+            <section>
+                <div class="sec-title">输入开头</div>
+                <label class="field-label" for="prompt">故事从这里开始</label>
+                <textarea id="prompt" placeholder="例：那天下着细雨，她推开旧书店的门……" maxlength="2000"></textarea>
+                <!-- 校验/计数：内联提示取代 alert -->
+                <div class="field-msg" id="promptMsg"></div>
+                <div class="counter" id="promptCount">0 字</div>
+            </section>
 
-        <div class="controls">
-            <span class="temp-label">温度</span>
-            <input type="range" id="temp" min="0.3" max="1.5" step="0.05" value="0.8" oninput="updateTemp()">
-            <span class="temp-value" id="tempVal">0.8</span>
-        </div>
+            <section>
+                <div class="sec-title">解码参数</div>
 
-        <div class="controls">
-            <span class="temp-label">top_p</span>
-            <input type="range" id="topp" min="0.5" max="1.0" step="0.05" value="0.9" oninput="updateTemp()">
-            <span class="temp-value" id="toppVal">0.9</span>
-        </div>
+                <div class="slider">
+                    <label class="slider-label" for="temp">温度</label>
+                    <span class="badge" id="tempVal">0.80</span>
+                    <input type="range" id="temp" min="0.3" max="1.5" step="0.05" value="0.8">
+                    <div class="slider-hint">越低越保守稳当，越高越发散</div>
+                </div>
 
-        <div class="controls">
-            <span class="temp-label">重复惩罚</span>
-            <input type="range" id="rep" min="1.0" max="1.5" step="0.05" value="1.15" oninput="updateTemp()">
-            <span class="temp-value" id="repVal">1.15</span>
-        </div>
+                <div class="slider">
+                    <label class="slider-label" for="topp">top_p</label>
+                    <span class="badge" id="toppVal">0.90</span>
+                    <input type="range" id="topp" min="0.5" max="1.0" step="0.05" value="0.9">
+                    <div class="slider-hint">只从累计概率最高的词里取样</div>
+                </div>
 
-        <button id="genBtn" onclick="generate()">✨ 开始续写</button>
+                <div class="slider">
+                    <label class="slider-label" for="rep">重复惩罚</label>
+                    <span class="badge" id="repVal">1.15</span>
+                    <input type="range" id="rep" min="1.0" max="1.5" step="0.05" value="1.15">
+                    <div class="slider-hint">压制复读；过高会让句子变生硬</div>
+                </div>
 
-        <div class="result-box" id="result">等待生成...</div>
-        <div class="result-meta" id="meta"></div>
+                <div class="slider">
+                    <label class="slider-label" for="maxTokens">生成长度</label>
+                    <!-- 默认 100 与后端 MAX_TOKENS_DEFAULT 一致；滑条值由 /model-info 下发 -->
+                    <span class="badge" id="maxTokensVal">100</span>
+                    <input type="range" id="maxTokens" min="30" max="300" step="10" value="100">
+                    <div class="slider-hint">续写的最大 token 数</div>
+                </div>
 
-        <div class="result-actions" id="actions" style="display:none;">
-            <button onclick="copyResult()">📋 复制</button>
-            <button onclick="clearResult()">🗑️ 清空</button>
-        </div>
+                <div class="row" style="margin-top:18px">
+                    <button class="btn-ghost" id="resetBtn" type="button">恢复默认参数</button>
+                </div>
+            </section>
 
-        <footer>MiniGPT-Chinese · 从零实现的 Transformer</footer>
+            <section>
+                <button class="btn-primary" id="genBtn" type="button">开始续写</button>
+                <div class="row" style="margin-top:12px; justify-content:center">
+                    <span class="kbd-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速提交</span>
+                </div>
+            </section>
+        </aside>
+
+        <!-- ==================== 阅读区 ==================== -->
+        <main class="reading" aria-live="polite">
+            <div class="read-head">
+                <div class="sec-title" style="margin:0">续写正文</div>
+                <!-- 顶部细栏：字数 / 耗时 / 参数，小字号不抢戏 -->
+                <div class="read-meta" id="meta"></div>
+            </div>
+
+            <div class="read-body" id="readBody" tabindex="0">
+                <!-- 空态：引导语 + 两个可点的示例开头 -->
+                <div class="empty-state" id="emptyState">
+                    <h2>还没有故事</h2>
+                    <p>在左侧写下两三句开头，模型会顺着它的语气继续写下去。中文小说通常在 200–500 字之间成型。</p>
+                    <div class="examples">
+                        <div class="examples-label">试试这些开头</div>
+                        <div class="example" id="ex1" role="button" tabindex="0">那天下着细雨，她推开旧书店的门</div>
+                        <div class="example" id="ex2" role="button" tabindex="0">很多年后他才明白，那天下午的沉默</div>
+                    </div>
+                </div>
+
+                <!-- 加载态：骨架行 -->
+                <div class="skeleton" id="skeleton" hidden>
+                    <div class="skeleton-label">正在续写</div>
+                    <div class="sk-line" style="width:96%"></div>
+                    <div class="sk-line" style="width:88%"></div>
+                    <div class="sk-line" style="width:92%"></div>
+                    <div class="sk-line" style="width:64%"></div>
+                    <div class="sk-line" style="width:90%"></div>
+                    <div class="sk-line" style="width:78%"></div>
+                    <div class="sk-line" style="width:42%"></div>
+                </div>
+
+                <!-- 成功态 / 错误态：逐段渲染的文章 -->
+                <div class="article" id="article" hidden></div>
+            </div>
+
+            <div class="row" id="actions" style="margin-top:18px" hidden>
+                <button class="btn-soft" id="copyBtn" type="button">复制正文</button>
+                <button class="btn-ghost" id="clearBtn" type="button">清空</button>
+            </div>
+        </main>
     </div>
 
+    <footer class="page-foot">MiniGPT-Chinese · 从零实现的 Transformer</footer>
+
+    <div class="toast-host" id="toastHost" aria-live="polite"></div>
+
     <script>
-        function updateTemp() {
-            document.getElementById('tempVal').textContent = document.getElementById('temp').value;
-            document.getElementById('toppVal').textContent = document.getElementById('topp').value;
-            document.getElementById('repVal').textContent = document.getElementById('rep').value;
+    'use strict';
+    (function () {
+        // ===== 元素句柄 =====
+        const $ = (id) => document.getElementById(id);
+        const el = {
+            subtitle: $('subtitle'), miName: $('miName'), miDevice: $('miDevice'),
+            miArch: $('miArch'), modelCard: $('modelCard'),
+            prompt: $('prompt'), promptMsg: $('promptMsg'), promptCount: $('promptCount'),
+            temp: $('temp'), topp: $('topp'), rep: $('rep'), maxTokens: $('maxTokens'),
+            tempVal: $('tempVal'), toppVal: $('toppVal'), repVal: $('repVal'),
+            maxTokensVal: $('maxTokensVal'),
+            genBtn: $('genBtn'), resetBtn: $('resetBtn'),
+            emptyState: $('emptyState'), skeleton: $('skeleton'), article: $('article'),
+            readBody: $('readBody'), meta: $('meta'),
+            actions: $('actions'), copyBtn: $('copyBtn'), clearBtn: $('clearBtn'),
+            ex1: $('ex1'), ex2: $('ex2'),
+            toastHost: $('toastHost'),
+        };
+
+        // ===== 模型信息（block_size / max_tokens 默认值的事实来源） =====
+        let MODEL = null;          // null = 还没拿到
+
+        // ---------------------------------------------------------------
+        // 小工具
+        // ---------------------------------------------------------------
+        function setHidden(node, hide) {
+            if (hide) node.setAttribute('hidden', '');
+            else node.removeAttribute('hidden');
+        }
+        // 提示文字：长度/错误共用一个元素，用 dataset.kind 区分谁可以清掉谁
+        function showPromptMsg(msg, kind) {
+            el.promptMsg.textContent = msg;
+            el.promptMsg.dataset.kind = kind || 'length';
+            el.promptMsg.className = 'field-msg' + (kind === 'error' ? ' err' : '');
+        }
+        function clearPromptMsg() {
+            el.promptMsg.textContent = '';
+            el.promptMsg.dataset.kind = '';
+            el.promptMsg.className = 'field-msg';
+        }
+        function markInvalid(msg) {
+            el.prompt.classList.add('invalid');
+            showPromptMsg(msg, 'error');
+            el.prompt.focus();
+        }
+        function dropInvalid() {
+            el.prompt.classList.remove('invalid');
+            if (el.promptMsg.dataset.kind === 'error') clearPromptMsg();
+        }
+
+        // ---------------------------------------------------------------
+        // toast：替代 alert。不打断操作、可样式化、2.6s 自动消失
+        // ---------------------------------------------------------------
+        function toast(msg, kind) {
+            const t = document.createElement('div');
+            t.className = 'toast' + (kind ? ' ' + kind : '');
+            t.textContent = msg;
+            el.toastHost.appendChild(t);
+            setTimeout(() => {
+                t.classList.add('hide');
+                setTimeout(() => t.remove(), 340);
+            }, 2600);
+        }
+
+        // ---------------------------------------------------------------
+        // 阅读区四态：空 / 加载 / 成功 / 错误（视觉上必须明显不同）
+        // ---------------------------------------------------------------
+        function showEmpty() {
+            setHidden(el.emptyState, false);
+            setHidden(el.skeleton, true);
+            setHidden(el.article, true);
+            el.article.className = 'article';
+            el.article.textContent = '';
+        }
+        function showSkeleton() {
+            setHidden(el.emptyState, true);
+            setHidden(el.skeleton, false);
+            setHidden(el.article, true);
+            el.article.className = 'article';
+            el.article.textContent = '';
+        }
+
+        // ★ 阅读感的最大来源：把生成文本**按段落**渲染成多个 <p>。
+        //   模型输出常常只有单换行、没有空行 → 先按空行切，只有 1 段时再按单换行切。
+        //   安全：全部走 textContent，绝不把模型输出塞进 innerHTML。
+        function toParagraphs(text) {
+            const raw = String(text == null ? '' : text);
+            let blocks = raw.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+            if (blocks.length <= 1) {
+                blocks = raw.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+            }
+            return blocks.length ? blocks : [raw.trim()];
+        }
+        function fillArticle(text, isError) {
+            const blocks = toParagraphs(text);
+            el.article.textContent = '';
+            for (const b of blocks) {
+                const p = document.createElement('p');
+                if (isError && b === blocks[0]) p.className = 'err-what';
+                if (isError && b === blocks[blocks.length - 1] && blocks.length > 1) p.className = 'err-how';
+                p.textContent = b;
+                el.article.appendChild(p);
+            }
+            el.article.className = isError ? 'article error-text' : 'article';
+            setHidden(el.emptyState, true);
+            setHidden(el.skeleton, true);
+            setHidden(el.article, false);
+        }
+        function showResult(text) { fillArticle(text, false); }
+        function showError(msg, how) { fillArticle(msg + '\n\n' + how, true); }
+
+        // ---------------------------------------------------------------
+        // 滑条：数值回显 + 已填充比例（自绘轨道靠 --pct 变量）
+        // ---------------------------------------------------------------
+        const SLIDERS = [
+            ['temp', 'tempVal'], ['topp', 'toppVal'],
+            ['rep', 'repVal'], ['maxTokens', 'maxTokensVal'],
+        ];
+        function syncSliders() {
+            for (const [input, out] of SLIDERS) {
+                const node = el[input];
+                el[out].textContent = node.value;
+                const min = parseFloat(node.min), max = parseFloat(node.max);
+                const pct = max > min ? ((parseFloat(node.value) - min) / (max - min)) * 100 : 0;
+                node.style.setProperty('--pct', pct.toFixed(2) + '%');
+            }
+        }
+        for (const [input] of SLIDERS) {
+            el[input].addEventListener('input', syncSliders);
+        }
+
+        // ---------------------------------------------------------------
+        // prompt 校验 + 字数计数（上限来自 /model-info 的 block_size）
+        // ---------------------------------------------------------------
+        // ★ 注意：后端 generate_ids 会把超长 prompt 静默截断到 block_size（见
+        //   model/generation.py:33），不会报错。所以这里必须主动提示，
+        //   否则用户会以为"整段输入都被模型看到了"。
+        // ★ 单位提醒：block_size 是 **token** 数，这里数的是**字符**数。
+        //   中文大致 1 字 ≈ 1 token，所以按"字"给用户提示是够用的近似，
+        //   但严格说不是同一单位 —— 别把它当成精确的 token 计数。
+        function checkPrompt() {
+            const v = el.prompt.value;
+            const len = v.length;
+            const limit = MODEL && MODEL.block_size ? MODEL.block_size : null;
+
+            if (!limit) {
+                el.promptCount.textContent = len + ' 字';
+                el.promptCount.className = 'counter';
+            } else {
+                const gen = el.maxTokens ? parseInt(el.maxTokens.value, 10) || 0 : 0;
+                const total = len + gen;                    // prompt + 计划生成
+                const overCombo = total > limit;
+                const nearCombo = total > limit * 0.9;
+
+                el.promptCount.textContent = len + ' 字';
+                const warn = len > limit || overCombo || nearCombo;
+                // 数量本身不变（都是"字数"），只靠颜色区分接近/超限
+                el.promptCount.className = 'counter' + (warn ? ' warn' : '');
+
+                if (len > limit) {
+                    showPromptMsg('⚠️ 输入已超过模型上下文 ' + limit + ' 字，超出部分会被截断'
+                                  + '（模型只看最后 ' + limit + ' 字），前面的内容会被丢弃');
+                } else if (overCombo) {
+                    // ★ 组合超限：prompt 本身没超，但"prompt + 生成长度"超了。
+                    //   后端不是不让你生成 —— generation.py:48-52 会滑动窗口重建，
+                    //   生成照常继续，但窗口滑走后 prompt 的开头会被丢掉，
+                    //   表现为"写着写着忘了开头写的是什么"。这是体验问题，不是报错。
+                    showPromptMsg('⚠️ 输入 ' + len + ' 字 + 计划生成 ' + gen + ' 字 = ' + total
+                                  + ' 字，已超过上下文 ' + limit + ' 字。生成到中途时，'
+                                  + '开头的输入会滑出模型的记忆窗口（生成不会中断，'
+                                  + '但可能逐渐跑题）→ 建议缩短输入或降低生成长度');
+                } else if (nearCombo && gen > 0) {
+                    showPromptMsg('⚠️ 输入 ' + len + ' 字 + 计划生成 ' + gen + ' 字 = ' + total
+                                  + ' 字，接近上下文上限 ' + limit + ' 字');
+                } else if (el.promptMsg.dataset.kind === 'length') {
+                    clearPromptMsg();
+                }
+            }
+            if (v) dropInvalid();
+        }
+        el.prompt.addEventListener('input', checkPrompt);
+        // max_tokens 变化也要重算组合超限（否则用户拉长生成长度时提示不会更新）
+        if (el.maxTokens) el.maxTokens.addEventListener('input', checkPrompt);
+
+        // ---------------------------------------------------------------
+        // 模型信息：副标题 + 信息条。加载中/失败都有降级文案，绝不留白
+        // ---------------------------------------------------------------
+        function renderModelInfo(m) {
+            MODEL = m;
+            if (m.error) { renderModelError(m.error); return; }
+
+            const arch = [
+                m.n_layer + ' 层', m.n_embd + ' 维', m.n_head + ' 头',
+                (m.ff_type === 'swiglu' ? 'SwiGLU' : m.ff_type.toUpperCase())
+                    + (m.ff_hidden ? '(h=' + m.ff_hidden + ')' : ''),
+                m.position_encoding === 'rope' ? 'RoPE' : '正弦位置编码',
+                'vocab ' + m.vocab_size, 'block ' + m.block_size,
+                '参数量 ' + m.params_human,
+            ].join(' · ');
+
+            el.miName.textContent = '当前模型：' + m.ckpt_name;
+            el.miArch.textContent = arch;
+            el.miDevice.textContent = m.device;
+            setHidden(el.miDevice, false);
+            el.subtitle.textContent = '从零训练的中文续写模型 · ' + m.display;
+
+            // 回退提示：终端早就打印了，但页面上必须也看得见
+            if (m.is_fallback) {
+                const note = document.createElement('div');
+                note.className = 'fallback-note';
+                note.textContent = '⚠️ 主权重缺失，已回退到 ' + m.ckpt_name
+                    + '（期望的 150M v3_gamma 权重不存在）。当前输出由较小的模型产生，'
+                    + '质量与文档里的指标不对应。';
+                el.modelCard.appendChild(note);
+            }
+
+            // max_tokens 滑条默认值以后端为准（单一事实来源）
+            if (m.max_tokens_default) {
+                el.maxTokens.value = m.max_tokens_default;
+                if (m.max_tokens_max) el.maxTokens.max = m.max_tokens_max;
+                syncSliders();
+            }
+            checkPrompt();
+        }
+
+        function renderModelError(reason) {
+            MODEL = null;
+            el.miName.textContent = '模型信息不可用';
+            el.miArch.textContent = '未能读取 /model-info：' + reason
+                + '（续写功能可能仍可用，但上下文长度上限未知）';
+            el.subtitle.textContent = '从零训练的中文续写模型';
+        }
+
+        async function loadModelInfo() {
+            try {
+                const r = await fetch('/model-info');
+                if (!r.ok) { renderModelError('HTTP ' + r.status); return; }
+                renderModelInfo(await r.json());
+            } catch (e) {
+                renderModelError('网络错误');
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // 生成
+        // ---------------------------------------------------------------
+        function extractDetail(body, status) {
+            // FastAPI 的错误体是 {"detail": ...}；detail 可能是字符串（HTTPException）
+            // 也可能是数组（422 校验错误，每项含 loc/msg/type）。
+            const d = body && body.detail;
+            if (typeof d === 'string') return d;
+            if (Array.isArray(d)) {
+                return d.map((x) => (x.loc ? x.loc.join('.') + ': ' : '') + (x.msg || JSON.stringify(x))).join('；');
+            }
+            if (d) return JSON.stringify(d);
+            return '服务端返回 HTTP ' + status;
+        }
+
+        // 骨架行的高度/宽度是写死的，这里只负责"滚到阅读区开头"
+        function scrollToReading() {
+            el.readBody.scrollTop = 0;
+            el.readBody.scrollIntoView({ block: 'start', behavior: 'smooth' });
         }
 
         async function generate() {
-            const prompt = document.getElementById('prompt').value.trim();
-            // 空输入拦截
-            if (!prompt) { alert('请先输入开头文字'); return; }
+            const prompt = el.prompt.value.trim();
+            // 空输入：内联提示 + 红边，不再用 alert 打断
+            if (!prompt) { markInvalid('请先输入开头文字'); return; }
+            dropInvalid();
 
-            const temp = parseFloat(document.getElementById('temp').value);
-            const top_p = parseFloat(document.getElementById('topp').value);
-            const rep = parseFloat(document.getElementById('rep').value);
-            const result = document.getElementById('result');
-            const meta = document.getElementById('meta');
-            const btn = document.getElementById('genBtn');
-            const actions = document.getElementById('actions');
+            const temp = parseFloat(el.temp.value);
+            const top_p = parseFloat(el.topp.value);
+            const rep = parseFloat(el.rep.value);
+            const maxTokens = parseInt(el.maxTokens.value, 10);
 
             // 防连点：禁用按钮 + 状态切换
-            btn.disabled = true;
-            btn.textContent = '⏳ 生成中...';
-            result.className = 'result-box loading';
-            result.textContent = '模型正在思考';
-            meta.textContent = '';
-            actions.style.display = 'none';
+            el.genBtn.disabled = true;
+            el.genBtn.textContent = '正在续写…';
+            el.resetBtn.disabled = true;
+            el.meta.textContent = '';
+            el.actions.hidden = true;
+            showSkeleton();
+            scrollToReading();   // 不阻塞用户滚动：只是文本，没有遮罩
 
-            const startTime = Date.now();
             try {
                 const response = await fetch('/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         prompt: prompt,
-                        max_tokens: 100,
+                        max_tokens: maxTokens,
                         temperature: temp,
                         top_p: top_p,
-                        repetition_penalty: rep
-                    })
+                        repetition_penalty: rep,
+                    }),
                 });
-                const data = await response.json();
-                result.className = 'result-box';
-                result.textContent = data.text;
-                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                meta.textContent = `耗时 ${elapsed}s · ${data.text.length} 字 · t${temp} p${top_p} r${rep}`;
-                actions.style.display = 'flex';
+
+                // ★ 原来这里直接 response.json()，从不检查 response.ok →
+                //   后端真实错误（422 / 500 detail）永远看不到，只会显示写死的
+                //   "生成失败，请重试"。现在先把原始文本读出来，再判断状态码。
+                const raw = await response.text();
+                let data = null;
+                try { data = JSON.parse(raw); } catch (e) { /* 非 JSON（如 500 纯文本） */ }
+
+                if (!response.ok) {
+                    const detail = data ? extractDetail(data, response.status) : (raw || '未知错误');
+                    showError('生成失败（HTTP ' + response.status + '）：' + detail,
+                              '请求没有成功，模型状态未被修改。可以检查后端进程是否还在运行，'
+                              + '或把参数调回合理范围后重试。');
+                    toast('生成失败，详情见阅读区', 'err');
+                    return;
+                }
+
+                showResult(data.text);
+                // 耗时用服务端实测值（前端 Date.now 含网络往返/排队，仅供参考）
+                const parts = [];
+                parts.push(typeof data.elapsed_ms === 'number'
+                    ? '耗时 ' + (data.elapsed_ms / 1000).toFixed(1) + 's' : '耗时未知');
+                if (typeof data.new_tokens === 'number') parts.push('新增 ' + data.new_tokens + ' token');
+                parts.push(data.text.length + ' 字');
+                parts.push('t' + temp + ' · p' + top_p + ' · r' + rep + ' · n' + maxTokens);
+                el.meta.textContent = parts.join(' · ');
+                el.actions.hidden = false;
+
+                // 生成完成后把视线带到结果开头（长文时用户不用自己找）
+                scrollToReading();
             } catch (e) {
-                result.className = 'result-box error';
-                result.textContent = '❌ 生成失败，请重试';
+                // 只有真正的网络层失败才到这里（后端 4xx/5xx 已在上面处理）
+                showError('请求失败：' + (e && e.message ? e.message : '无法连接服务端'),
+                          '请确认后端进程还在运行（python app/server.py），然后重试。');
+                el.meta.textContent = '';
+                toast('网络错误', 'err');
             } finally {
-                btn.disabled = false;
-                btn.textContent = '✨ 开始续写';
+                el.genBtn.disabled = false;
+                el.genBtn.textContent = '开始续写';
+                el.resetBtn.disabled = false;
             }
         }
 
-        async function copyResult() {
-            const text = document.getElementById('result').textContent;
-            await navigator.clipboard.writeText(text);
-            alert('已复制');
+        // ---------------------------------------------------------------
+        // 复制：三级降级链
+        //   ⚠️ --host 默认 0.0.0.0，局域网用 http://192.168.x.x:8000 访问时
+        //   **不是 secure context** → navigator.clipboard 必然 reject 或不存在。
+        //   所以必须有 execCommand 兜底，光提示用户"手动复制"是不够的。
+        // ---------------------------------------------------------------
+        function selectResultText() {
+            const node = el.article;
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
         }
 
-        function clearResult() {
-            document.getElementById('result').textContent = '等待生成...';
-            document.getElementById('result').className = 'result-box';
-            document.getElementById('meta').textContent = '';
-            document.getElementById('actions').style.display = 'none';
+        function legacyCopy(text) {
+            // execCommand 已 deprecated，但 HTTP 页面里这是唯一可行的兜底，别无选择
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+                document.body.appendChild(ta);
+                ta.select();
+                ta.setSelectionRange(0, ta.value.length);
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                return ok;
+            } catch (e) {
+                return false;
+            }
         }
+
+        // 从渲染后的段落里取回纯文本：段间补空行，复制出来仍是分段的小说
+        function currentArticleText() {
+            const ps = el.article.querySelectorAll('p');
+            if (!ps.length) return el.article.textContent.trim();
+            return Array.prototype.map.call(ps, (p) => p.textContent.trim()).join('\n\n');
+        }
+
+        async function copyResult() {
+            if (el.article.hidden) { toast('还没有内容可复制'); return; }
+            const text = currentArticleText();
+            if (!text) { toast('还没有内容可复制'); return; }
+            // 1) 现代 API（仅 secure context 可用）
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    toast('已复制', 'ok');
+                    return;
+                } catch (e) { /* 落到 2) */ }
+            }
+            // 2) execCommand 兜底
+            if (legacyCopy(text)) { toast('已复制', 'ok'); return; }
+            // 3) 彻底失败：替用户选中，并说清楚下一步
+            selectResultText();
+            toast('复制失败，已为你选中，请按 Ctrl+C', 'err');
+        }
+
+        // ---------------------------------------------------------------
+        // 清空 / 恢复默认 / 快捷键
+        // ---------------------------------------------------------------
+        function clearResult() {
+            showEmpty();
+            el.meta.textContent = '';
+            el.actions.hidden = true;
+            el.readBody.scrollTop = 0;
+        }
+
+        function resetAll() {
+            el.temp.value = 0.8;
+            el.topp.value = 0.9;
+            el.rep.value = 1.15;
+            // 生成长度的默认值同样以后端为准
+            el.maxTokens.value = (MODEL && MODEL.max_tokens_default) ? MODEL.max_tokens_default : 100;
+            syncSliders();
+            el.prompt.value = '';
+            el.prompt.classList.remove('invalid');
+            clearPromptMsg();
+            checkPrompt();
+            el.prompt.focus();
+            toast('已恢复默认参数', 'ok');
+        }
+
+        // 示例开头：点击/回车填入 textarea（不自动提交，用户还能改）
+        function useExample(node) {
+            el.prompt.value = node.textContent.trim();
+            checkPrompt();
+            el.prompt.focus();
+            el.prompt.setSelectionRange(el.prompt.value.length, el.prompt.value.length);
+        }
+        for (const k of ['ex1', 'ex2']) {
+            el[k].addEventListener('click', () => useExample(el[k]));
+            el[k].addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); useExample(el[k]); }
+            });
+        }
+
+        el.prompt.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { clearResult(); el.prompt.focus(); }
+        });
+
+        el.genBtn.addEventListener('click', generate);
+        el.resetBtn.addEventListener('click', resetAll);
+        el.copyBtn.addEventListener('click', copyResult);
+        el.clearBtn.addEventListener('click', clearResult);
+
+        // ===== 初始化 =====
+        syncSliders();
+        checkPrompt();
+        loadModelInfo();
+    })();
     </script>
 </body>
 </html>
