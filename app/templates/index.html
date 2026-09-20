@@ -1030,14 +1030,51 @@
                 }
 
                 showResult(data.text);
-                // 耗时用服务端实测值（前端 Date.now 含网络往返/排队，仅供参考）
                 const parts = [];
+                // 耗时用服务端实测值（前端 Date.now 含网络往返/排队，仅供参考）
                 parts.push(typeof data.elapsed_ms === 'number'
                     ? '耗时 ' + (data.elapsed_ms / 1000).toFixed(1) + 's' : '耗时未知');
-                if (typeof data.new_tokens === 'number') parts.push('新增 ' + data.new_tokens + ' token');
-                parts.push(data.text.length + ' 字');
-                parts.push('t' + temp + ' · p' + top_p + ' · r' + rep + ' · n' + maxTokens);
+
+                // -----------------------------------------------------------
+                // ★ 字数口径（修正"细栏撒谎"）：data.text 是**全文** = prompt + 新生成。
+                //   服务端 /generate 里 result = clean_text(decode(ctx_ids))，
+                //   而 ctx_ids 含用户输入的 prompt 前缀，所以 text 从头就是 prompt。
+                //   ⚠️ 单位是**字符**数（String.length，UTF-16 码元），**不是 token 数**：
+                //      中文大致 1 字 ≈ 1 token，但两者从来不是一回事（英文/标点差得远），
+                //      所以 token 数一律取服务端实测的 new_tokens，绝不拿字数冒充 token。
+                //   历史问题：这里只写 "N 字" 却填的是全文长度，用户拿 txt 一量
+                //   （txt 里只有新生成的部分）就以为页面在撒谎 → 两个数其实都没算错，
+                //   错在标签含糊。现在把「新增」和「全文」分开写清楚。
+                // -----------------------------------------------------------
+                const fullLen = data.text.length;              // 全文（含输入开头）字符数
+                const promptStr = (typeof data.prompt === 'string') ? data.prompt : '';
+                // 新生成部分 = text 去掉开头的 prompt。只用**严格前缀匹配**：
+                // clean_text() 会 html.unescape + 过滤控制字符，prompt 里若含
+                // "&amp;" 这类实体或控制字符，前缀就对不上 —— 此时宁可不显示，
+                // 也不用 indexOf / 去空白之类的猜测去"瞎算"一个错的字数（降级见 else）。
+                const prefixOk = promptStr.length > 0 && data.text.startsWith(promptStr);
+                const newLen = prefixOk ? fullLen - promptStr.length : null;
+
+                if (newLen !== null) {
+                    // 新增字数与生成 token 数放一起，方便对照（两者口径不同，故意都保留）
+                    let add = '新增 ' + newLen + ' 字';
+                    if (typeof data.new_tokens === 'number') add += '（' + data.new_tokens + ' token）';
+                    parts.push(add);
+                    parts.push('全文 ' + fullLen + ' 字');
+                } else {
+                    // 降级：切不出可靠的新增部分 → 只报全文，并写明它包含输入开头。
+                    // 这一句不能省：否则用户又会把全文当成新增字数（正是原来的 bug）。
+                    parts.push('全文 ' + fullLen + ' 字（含输入开头，新增字数无法判定）');
+                    if (typeof data.new_tokens === 'number') parts.push('新增 ' + data.new_tokens + ' token');
+                }
+
+                // 参数：t/p/r 与左侧滑条一一对应；n 原来只写 "n490"，
+                // 既看不出是 max_tokens 也看不出单位 → 改成带单位、不致误解的写法。
+                parts.push('t' + temp + ' · p' + top_p + ' · r' + rep + ' · 最多 ' + maxTokens + ' token');
                 el.meta.textContent = parts.join(' · ');
+                // 悬停解释缩写与字数口径（只设 title 属性，不碰任何视觉样式）
+                el.meta.title = 't=温度 · p=top_p · r=重复惩罚 · 「最多 N token」= 本次请求的生成长度上限\n'
+                    + '字数按字符计（不是 token）：新增 = 本次新生成的文字，全文 = 新增 + 你输入的开头';
                 el.actions.hidden = false;
 
                 // 生成完成后把视线带到结果开头（长文时用户不用自己找）
