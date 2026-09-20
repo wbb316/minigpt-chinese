@@ -44,7 +44,15 @@ MODEL_INFO = {}
 #    pydantic 默认值也引用这里 —— 历史上前端写死 100、后端默认 80，两边不一致。
 #    改这两个常量即可，不要在前端再写死一份。
 MAX_TOKENS_DEFAULT = 100
-MAX_TOKENS_MAX = 300
+# 上限 = **context 总长**（block_size），不是拍脑袋的 300。
+#   ⚠️ 2026-09-20 修正：原值 300 是个任意上限，会让用户明明有 512 的窗口却只能生成 300。
+#   语义澄清：这个上限是「滑动窗口每次能看到的总 token 数」的保守代理值，
+#   **不是**「必须留出这么多余量」—— 前端会用 block_size 做动态计算：
+#       可生成上限 = block_size − 当前输入字数
+#   所以这里只要给一个不会误拦合法请求的天花板即可（block_size 本身）。
+#   本机 50M/150M 存档的 block_size 都是 512，故取 512；换更长 context 的模型时
+#   应同步调整（真正权威的值是 checkpoints 里的 block_size）。
+MAX_TOKENS_MAX = 512
 
 
 def _fmt_params(n: int) -> str:

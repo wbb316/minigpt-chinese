@@ -223,6 +223,12 @@
             font-variant-numeric: tabular-nums;
         }
         .slider-hint { grid-column: 1 / -1; font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
+        /* #maxHint 可点击（一键拉到当前允许的最大生成长度）—— 极克制的可交互暗示：
+           下划虚线 + hover 变强调色，不加背景/边框，避免破坏安静的排版节奏。 */
+        #maxHint { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+        #maxHint:hover { color: var(--accent); }
+        /* 上限被夹紧时的提示（用户的生成长度因输入变长而被下调） */
+        #maxHint.clamp-note { color: var(--warn); text-decoration-thickness: 2px; }
 
         /* 自绘轨道与 thumb（原生外观整体替换）
            --pct = 已填充比例，由 JS 在 syncSliders() 里写入；此处给个初始声明 */
@@ -564,10 +570,13 @@
 
                 <div class="slider">
                     <label class="slider-label" for="maxTokens">生成长度</label>
-                    <!-- 默认 100 与后端 MAX_TOKENS_DEFAULT 一致；滑条值由 /model-info 下发 -->
+                    <!-- 默认 100 与后端 MAX_TOKENS_DEFAULT 一致；滑条值与上限由 /model-info
+                         下发 + updateGenCeiling() 动态计算。max=512 只是 HTML 初值
+                         （= block_size），页面加载后会被「block_size − 输入字数」覆盖。 -->
                     <span class="badge" id="maxTokensVal">100</span>
-                    <input type="range" id="maxTokens" min="30" max="300" step="10" value="100">
-                    <div class="slider-hint">续写的最大 token 数</div>
+                    <input type="range" id="maxTokens" min="30" max="512" step="10" value="100">
+                    <div class="slider-hint" id="maxHint"
+                         title="点击：直接拉到当前允许的最大值">续写最大 token 数 · 上限随输入自动收缩</div>
                 </div>
 
                 <div class="row" style="margin-top:18px">
@@ -640,6 +649,7 @@
             miArch: $('miArch'), modelCard: $('modelCard'),
             prompt: $('prompt'), promptMsg: $('promptMsg'), promptCount: $('promptCount'),
             temp: $('temp'), topp: $('topp'), rep: $('rep'), maxTokens: $('maxTokens'),
+            maxHint: $('maxHint'),
             tempVal: $('tempVal'), toppVal: $('toppVal'), repVal: $('repVal'),
             maxTokensVal: $('maxTokensVal'),
             genBtn: $('genBtn'), resetBtn: $('resetBtn'),
@@ -652,6 +662,12 @@
 
         // ===== 模型信息（block_size / max_tokens 默认值的事实来源） =====
         let MODEL = null;          // null = 还没拿到
+        // 生成长度滑条的**绝对下限**（HTML 里 min="30"）。取一个较大的下限是为了
+        // 保证滑条始终有有效区间 —— 否则输入很长时 max 会掉到 min 以下，滑条失效。
+        const maxTokensFloor = 30;
+        // 服务端下发的**天花板**（现在是 512 = block_size；同时是后端 pydantic 的校验边界）。
+        // 实际滑条上限 = min(天花板, block_size − 输入字数)，见 updateGenCeiling()。
+        let maxTokensServerCap = null;
 
         // ---------------------------------------------------------------
         // 小工具
@@ -775,6 +791,7 @@
             const v = el.prompt.value;
             const len = v.length;
             const limit = MODEL && MODEL.block_size ? MODEL.block_size : null;
+            updateGenCeiling();          // 上限随输入长度收缩（定义见下方）
 
             if (!limit) {
                 el.promptCount.textContent = len + ' 字';
@@ -816,6 +833,72 @@
         if (el.maxTokens) el.maxTokens.addEventListener('input', checkPrompt);
 
         // ---------------------------------------------------------------
+        // 生成长度滑条：**按输入长度动态确定上限**
+        // ---------------------------------------------------------------
+        // 为什么：block_size 限的是注意力窗口（prompt + 生成的总 token 数），
+        //   不是生成长度（见 model/generation.py:48-52 的滑动窗口重建）。
+        //   所以"还能生成多少"取决于"输入已经占了多少"：
+        //      生成长度上限 = block_size - 输入长度
+        //   固定写死 300 时，输入 300 字 + 生成 300 字 = 600 > 512 → 中途滑窗丢开头，
+        //   表现为"写着写着跑题"。这里让上限随输入收缩，从源头避免踩坑。
+        //
+        // ⚠️ 单位是**字符**不是 token（前端拿不到精确 token 数）。
+        //   中文约 1 字 ≈ 1 token，按字估算是够用的近似；英文会高估 token 数
+        //   （偏保守，宁紧不松），别把它当成精确的 token 计数。
+        function updateGenCeiling() {
+            if (!el.maxTokens) return;
+            const limit = MODEL && MODEL.block_size ? MODEL.block_size : null;
+            if (!limit) return;                       // 模型信息未到 → 保持原样
+
+            const len = el.prompt ? el.prompt.value.length : 0;
+            const room = limit - len;                 // 还能生成多少（字符≈token）
+            // 可生成上限 = block_size − 当前字数（用户要的语义：上下文总量固定，
+            // 输入占多少，剩下的就都能用来生成）。
+            // 服务端 max_tokens_max 只是**不误拦合法请求的天花板**，正常情况下
+            // room 先到顶；两者仍取 min，防止后端上限配得比 block_size 还小时越界。
+            const cap = maxTokensServerCap ? Math.min(maxTokensServerCap, room) : room;
+            const max = Math.max(maxTokensFloor, cap);
+            el.maxTokens.max = String(max);
+
+            // 当前值超出新上限 → 夹紧（不静默：提示里说明，用户看得到）
+            let clamped = false;
+            const cur = parseInt(el.maxTokens.value, 10) || 0;
+            if (cur > max) {
+                el.maxTokens.value = String(max);
+                clamped = true;
+            }
+
+            if (el.maxHint) {
+                const t = parseInt(el.maxTokens.value, 10) || 0;
+                // 软提示线：生成窗口内的"远景"会逐渐滑出视野，实践上超过 ~300 字后
+                // 容易与开头脱节、句式趋重复。这不是错误，只是质量开始衰减的信号。
+                const SOFT = 300;
+                const parts = [];
+                if (len > 0) parts.push('输入 ' + len + ' 字 → 最多还能生成 ' + max + ' 字'
+                                       + (t < max ? '（再拉可到 ' + max + '）' : ''));
+                else parts.push('续写最大 token 数 · 上限随输入自动收缩');
+                if (t > SOFT) parts.push('⚠️ 超过 ' + SOFT + ' 字后可能逐渐与开头脱节');
+                el.maxHint.textContent = parts.join(' · ');
+                el.maxHint.classList.toggle('clamp-note', clamped);
+            }
+            if (clamped) syncSliders();
+        }
+
+        // 一键把生成长度拉到当前允许的最大值（对应"多写点"这个常见意图）
+        if (el.maxHint) {
+            el.maxHint.addEventListener('click', () => {
+                if (!el.maxTokens) return;
+                el.maxTokens.value = el.maxTokens.max;
+                syncSliders();
+                checkPrompt();
+            });
+        }
+        // 注意顺序：先调 updateGenCeiling 夹紧上限，再跑 checkPrompt 出提示
+        if (el.maxTokens) {
+            el.maxTokens.addEventListener('input', updateGenCeiling);
+        }
+
+        // ---------------------------------------------------------------
         // 模型信息：副标题 + 信息条。加载中/失败都有降级文案，绝不留白
         // ---------------------------------------------------------------
         function renderModelInfo(m) {
@@ -850,9 +933,11 @@
             // max_tokens 滑条默认值以后端为准（单一事实来源）
             if (m.max_tokens_default) {
                 el.maxTokens.value = m.max_tokens_default;
-                if (m.max_tokens_max) el.maxTokens.max = m.max_tokens_max;
-                syncSliders();
             }
+            // 服务端硬上限记下来给 updateGenCeiling() 用；**不要**直接写 el.maxTokens.max，
+            // 那是动态值（会随输入收缩），直接写会被下面的 checkPrompt() 立刻覆盖。
+            if (m.max_tokens_max) maxTokensServerCap = m.max_tokens_max;
+            syncSliders();
             checkPrompt();
         }
 
