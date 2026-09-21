@@ -89,6 +89,75 @@ def ensure_pos_capacity(gpt, min_len: int) -> int:
     return gpt.pos_emb.extend_to(min_len)
 
 
+def stream_ids(gpt, prompt_ids: List[int],
+               max_new_tokens: int,
+               temperature: float = 1.0,
+               top_p: float = 1.0,
+               repetition_penalty: float = 1.0,
+               rng: Optional[torch.Generator] = None,
+               device: Optional[torch.device] = None,
+               max_overrun: int = 64):
+    """**流式**自回归续写生成器：每采到一个 token 就 `yield` 它的 int id。
+
+    ★ 这是唯一的采样循环实现 —— `generate_ids` 是它的薄封装（`list()` 一下）。
+      为什么必须收敛到一处：`model/sampling.py` 开头就写着"避免两处逻辑漂移"；
+      流式/非流式若各写一份循环，迟早会在采样参数、重复惩罚的 prev_ids 口径或
+      超窗重建判据上分叉，届时两条路径对同一 seed 给出不同文本。
+
+    ★ 增量步与**生成器的消费节奏解耦**：调用方 `next()` 之间可以做别的事（解码、
+      发 SSE 帧）。生成器本身不做任何 IO，也不 await；实际执行线程由调用方决定
+      （server 侧靠 Starlette 的 `iterate_in_threadpool` 每步跑在工作线程）。
+
+    ⚠️ 触发时机：`yield` 发生在**本步的前向计算已经做完之后**（重建分支也做完了），
+      所以调用方拿到第 i 个 id 时，缓存已经推进到"下一步可直接增量"的状态。
+      客户端在这一刻断开 → 下一次 `next()` 不会再被调用 → 剩余步数**自然不执行**
+      （这是"客户端断流能在 1 步内停下"的原因，不依赖任何取消信号）。
+
+    参数语义与 `generate_ids` **逐项相同**（含 rng 消耗顺序），
+    因此同 seed 下 `list(stream_ids(...)) == generate_ids(...)[1]` 逐位一致。
+
+    返回值：这个函数是**生成器**，本身不返回 (ctx, new_ids)，而且只 yield **新生成**的
+      token（**不含 prompt**）。需要完整结果时请用 `generate_ids`；需要逐步消费时
+      自行累积：`ctx = list(prompt_ids)[-gpt.block_size:] + list(stream_ids(...))`。
+      ⚠️ 流式层要注意：`/generate` 的 text 是「prompt + 新生成」的全文，所以把 id 喂
+        增量解码器时必须自己把 prompt 的 id 串在前面（server 侧用 itertools.chain）。
+    """
+    if max_overrun < 0:
+        raise ValueError(f'max_overrun 不能为负，得到 {max_overrun}')
+    if device is None:
+        device = next(gpt.parameters()).device
+    block = gpt.block_size
+    limit = block + max_overrun          # 缓存有效长度上限（含）；位置索引 < limit
+    if max_overrun > 0:
+        # 扩表必须发生在任何超窗位置被用到之前（越界是静默的！）
+        ensure_pos_capacity(gpt, limit)
+    prompt_ids = list(prompt_ids[-block:])
+    ctx: List[int] = list(prompt_ids)
+
+    x = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+    with torch.no_grad():
+        logits, kvs = gpt(x, return_kv=True)
+        for _ in range(max_new_tokens):
+            nid = sample(logits, temperature=temperature, top_p=top_p,
+                         repetition_penalty=repetition_penalty,
+                         prev_ids=ctx, rng=rng)
+            tok_id = int(nid.item())
+            ctx.append(tok_id)
+
+            cache_len = kvs[0][0].size(2)
+            if cache_len + 1 > limit:
+                # 缓存将超过 block_size + max_overrun：用最近 block_size 个 token 重建
+                wx = torch.tensor([ctx[-block:]],
+                                  dtype=torch.long, device=device)
+                logits, kvs = gpt(wx, return_kv=True)
+            else:
+                logits, kvs = gpt(nid, past_kvs=kvs)
+
+            # ★ 放在最后：上面的缓存推进完成后才把 id 交出去，
+            #   保证调用方拿到 id 时"下一步要用的状态"已就绪（见上方触发时机说明）。
+            yield tok_id
+
+
 def generate_ids(gpt, prompt_ids: List[int],
                  max_new_tokens: int,
                  temperature: float = 1.0,
@@ -116,36 +185,15 @@ def generate_ids(gpt, prompt_ids: List[int],
         64 → 35.7 ms/token 已是**最快**，128/256 反而略慢（36.9/39.1），
         因为主导成本是单步增量、超窗只摊薄偶发重建；而 128 起文本质量明显退化。
         详见本模块顶部「已知取舍」。
+
+    ★ 实现已收敛为 `stream_ids` 的薄封装（签名/返回值/rng 消耗顺序**完全不变**）。
+      重构动机见 `stream_ids` docstring：避免流式与非流式两份采样循环漂移。
+      等价性由 `test/test_streaming.py` 的同 seed 逐位一致测试守住。
     """
-    if max_overrun < 0:
-        raise ValueError(f'max_overrun 不能为负，得到 {max_overrun}')
-    if device is None:
-        device = next(gpt.parameters()).device
     block = gpt.block_size
-    limit = block + max_overrun          # 缓存有效长度上限（含）；位置索引 < limit
-    if max_overrun > 0:
-        # 扩表必须发生在任何超窗位置被用到之前（越界是静默的！）
-        ensure_pos_capacity(gpt, limit)
     prompt_ids = list(prompt_ids[-block:])
-    ctx: List[int] = list(prompt_ids)
-
-    x = torch.tensor([prompt_ids], dtype=torch.long, device=device)
-    new_ids: List[int] = []
-    with torch.no_grad():
-        logits, kvs = gpt(x, return_kv=True)
-        for _ in range(max_new_tokens):
-            nid = sample(logits, temperature=temperature, top_p=top_p,
-                         repetition_penalty=repetition_penalty,
-                         prev_ids=ctx, rng=rng)
-            new_ids.append(int(nid.item()))
-            ctx.append(new_ids[-1])
-
-            cache_len = kvs[0][0].size(2)
-            if cache_len + 1 > limit:
-                # 缓存将超过 block_size + max_overrun：用最近 block_size 个 token 重建
-                wx = torch.tensor([ctx[-block:]],
-                                  dtype=torch.long, device=device)
-                logits, kvs = gpt(wx, return_kv=True)
-            else:
-                logits, kvs = gpt(nid, past_kvs=kvs)
-    return ctx, new_ids
+    new_ids = list(stream_ids(gpt, prompt_ids, max_new_tokens,
+                              temperature=temperature, top_p=top_p,
+                              repetition_penalty=repetition_penalty,
+                              rng=rng, device=device, max_overrun=max_overrun))
+    return prompt_ids + new_ids, new_ids

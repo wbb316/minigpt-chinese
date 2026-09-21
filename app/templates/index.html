@@ -641,12 +641,19 @@
 
             <section>
                 <button class="btn-primary" id="genBtn" type="button">开始续写</button>
-                <!-- 「停止等待」：只在请求进行中可见（空闲时 hidden）。
+                <!-- 「停止生成」：只在请求进行中可见（空闲时 hidden）。
                      沿用 .btn-ghost 档位（与「清空」同级），不抢主按钮视线。
-                     ⚠️ 文案刻意是「停止等待」而不是「停止生成」：AbortController 只能
-                     中止**前端等待**，后端那个请求照旧在算（见 abortGenerate() 的注释）。 -->
+                     ★ 文案是「停止生成」而不是「停止等待」（2026-09-21 流式改造后改的）：
+                     流式用 SSE + 同步生成器，客户端一断开，starlette 就不再 next()
+                     那个生成器 → 剩余步数**根本不会执行**。
+                     判据是 **CPU**（这是实测过的，别再引用"日志显示算了几步"）：
+                     中止后 300s 内进程 CPU 增量 0.3%（纯空转噪声），且服务端
+                     `已算` 恰好等于客户端已消费的 token 数 —— 一步都没多算。
+                     ⚠️ 不要拿那条 `[stream] 提前结束` 日志当证据：starlette 只是不再
+                     拉取，并不保证马上 close() 生成器（实测收尾日志 2.8s~266s 才打，
+                     静默时甚至 300s 都不打）。详见 abortGenerate()。 -->
                 <div class="row" id="abortRow" style="margin-top:10px; justify-content:center" hidden>
-                    <button class="btn-ghost" id="abortBtn" type="button">停止等待</button>
+                    <button class="btn-ghost" id="abortBtn" type="button">停止生成</button>
                 </div>
                 <div class="row" style="margin-top:12px; justify-content:center">
                     <span class="kbd-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速提交</span>
@@ -1063,29 +1070,43 @@
         }
 
         // ---------------------------------------------------------------
-        // 生成
+        // 生成（流式 SSE）
         // ---------------------------------------------------------------
-        // ★★★「停止等待」的语义边界（别再误解，也别让后人误解）★★★
-        //   AbortController 只能中止**前端这一侧的等待**：fetch 的 promise 立刻
-        //   以 AbortError reject，骨架行随之消失，用户拿回界面控制权。
-        //
-        //   后端**不会**停。app/server.py 的 /generate 是同步 def，FastAPI 在线程池
-        //   里跑它；客户端断开并不会打断那段 Python —— 这次推理仍会一路算完
-        //   （150M / CPU 上 max_tokens=512 约 22s），只是结果没人接收。
-        //
-        //   所以：按钮文案是「停止等待」而不是「停止生成」，toast 也如实说明
-        //   "服务端可能仍在完成本次请求"。本次改动刻意**不加后端取消机制**
-        //   （同步 def 没有协作式取消点，塞不进 signal），也不做流式。
-        // ---------------------------------------------------------------
+        // ★★★ 中止语义（2026-09-21 流式改造后**已变**，别再按旧注释理解）★★★
+        //   现在走 POST /generate/stream（SSE）+ 同步生成器：
+        //     · 服务端每算出一个 token 就 yield 一帧；
+        //     · 客户端 abort() → TCP 断开 → starlette 不再 next() 生成器
+        //       → 剩余步数**根本不会执行**。
+        //   所以按钮叫「停止生成」：它真的停掉了生成，不是只停前端等待。
+        //   ✅ 判据（实测）：中止后 300s 内进程 CPU 增量 **0.3%**（纯空转噪声），
+        //      且服务端 `已算` 恰好等于客户端已消费的 token 数 —— 一步都没多算。
+        //   ⚠️ 反例警告：**不要**用那条 `[stream] 提前结束` 日志来证明"停了"。
+        //      starlette 只是不再拉取，并不保证马上 close() 生成器 —— 实测该日志
+        //      2.8s~266s 才打，静默时 300s 都不打。日志是观测手段，不是判据。
+        //   ⚠️ 也别信"断流后还会多算几十步"的说法：那是 Python 客户端没真正关掉
+        //      socket（Session 未 close / 等 GC）导致的假象 —— 连接还活着，服务端
+        //      当然继续算。浏览器 AbortController 会立刻断开。
+        //   ⚠️ 但要说准一句：已生成的部分**是有效结果**，不是"没算完的垃圾" ——
+        //      模型每步产出的就是那一步的最终答案，后续步骤不会回头改写它。
+        //      所以中止后**保留已渲染的半截文字**并正常收尾（进历史、可接着写）。
+        //   ⚠️ 若浏览器不支持流式（老 Safari 无 ReadableStream）→ 自动退回旧的
+        //      /generate 一次性请求，那条路径的中止**仍然只是"停止等待"**，
+        //      此时沿用旧的回退快照逻辑（见 catch 分支）。
         const canAbort = (typeof window.AbortController === 'function');
-        let inflight = null;     // 当前请求的 AbortController（仅前端等待可中止）
+        const canStream = canAbort && typeof window.ReadableStream === 'function'
+            && typeof window.TextDecoder === 'function'
+            && typeof window.fetch === 'function';
+        let inflight = null;     // 当前请求的 AbortController
         let genLocked = false;   // 是否已有请求进行中（防重入）
-        let lastResult = null;   // 上一次成功渲染的结果，中止后用来"可恢复"地回退
+        let lastResult = null;   // 上一次成功渲染的结果（「接着写」的起点）
         let lastMetaText = '';
         let lastMetaTitle = '';
+        // 流式专属：正文是否已经进入"累积 + 节流"渲染模式
+        let streamMode = false;
 
-        // 中止后回到**可用状态**：有上次结果就原样恢复（正文 + 细栏），
-        // 没有就回空态。任何一种都不能卡在骨架行。
+        // 中止后回到**可用状态**（只用于不支持流式的回退路径：/generate 是一次性
+        // 请求，中止时手上没有任何增量文本，只能恢复上一次结果）。
+        // 没有上次结果 → 回空态。任何一种都不能卡在骨架行。
         function restoreAfterAbort() {
             if (lastResult !== null) {
                 showResult(lastResult);
@@ -1102,7 +1123,7 @@
             updateContinueBtn();   // 有上次结果 → 「接着写」可用；没有 → 保持禁用
         }
 
-        // 停止等待（= 只中止前端 fetch，见上方语义说明）
+        // 停止生成（abort 的真实语义见上方说明）
         function abortGenerate() {
             if (!inflight) return;   // 空闲/已结束时点它 = 无操作，别抛异常
             inflight.abort();
@@ -1126,9 +1147,209 @@
             el.readBody.scrollIntoView({ block: 'start', behavior: 'smooth' });
         }
 
+        // ---------------------------------------------------------------
+        // 流式渲染：累积全文 + 节流重绘 + done 之后才写状态
+        // ---------------------------------------------------------------
+        // 为什么要节流：toParagraphs()/fillArticle() 是**幂等的全文重渲染**（正确性
+        // 没问题，最终 DOM 与一次性 /generate 逐字一致），但它每帧都清空并重建全部
+        // <p>。一个 token 一帧（~26ms）意味着每秒重排近 40 次，会破坏用户选区、
+        // 让长文闪烁。所以把"重绘"与"到达"解耦：文本立刻累积，重绘按
+        // STREAM_RENDER_MS 节流（最后一定补一次，保证收尾完整）。
+        // ⚠️ 不用 requestAnimationFrame：后台标签页里 rAF 不触发，切回来才补 ——
+        //    用户看到的是"卡住"，而 setTimeout 仍会跑（只是被浏览器降频，可接受）。
+        const STREAM_RENDER_MS = 80;
+        let streamThrottleTimer = null;
+        let streamLastRenderAt = 0;
+        let streamAccum = '';
+        let streamBuffer = '';           // SSE 分帧缓冲（跨 chunk 的半帧留在这里）
+        let streamElapsedMs = null;      // done 帧带来的服务端实测耗时
+        let streamNewTokens = null;      // done 帧带来的新生成 token 数
+        let streamPrompt = '';           // 本次请求的开头（细栏算"新增字数"要用）
+        let streamStartedAt = 0;         // 发请求时刻（#debug 里算首字延迟）
+        let streamFirstFrameAt = null;   // 第一帧到达时刻（首字延迟的另一半）
+        let streamFrameCount = 0;
+
+        function streamCancelThrottle() {
+            if (streamThrottleTimer !== null) {
+                clearTimeout(streamThrottleTimer);
+                streamThrottleTimer = null;
+            }
+        }
+        function streamRenderNow() {
+            streamCancelThrottle();
+            streamLastRenderAt = Date.now();
+            showResult(streamAccum);
+        }
+        function streamRenderThrottled() {
+            const wait = STREAM_RENDER_MS - (Date.now() - streamLastRenderAt);
+            if (wait <= 0) { streamRenderNow(); return; }
+            if (streamThrottleTimer !== null) return;   // 已排好一次补绘，不重复排
+            streamThrottleTimer = setTimeout(() => {
+                streamThrottleTimer = null;
+                streamLastRenderAt = Date.now();
+                showResult(streamAccum);
+            }, wait);
+        }
+
+        // 细栏文案（耗时 / 字数 / 参数）。★ 字数口径与原来完全一致：
+        // data.text 是**全文**（prompt + 新生成），服务端首帧就带 prompt。
+        function buildMetaText(fullText, elapsedMs, newTokens, opts) {
+            const o = opts || {};
+            const parts = [];
+            parts.push(typeof elapsedMs === 'number' && elapsedMs >= 0
+                ? '耗时 ' + (elapsedMs / 1000).toFixed(1) + 's' : '耗时未知');
+            const fullLen = fullText.length;
+            const promptStr = (typeof o.prompt === 'string') ? o.prompt : '';
+            // 新生成部分 = 全文去掉开头的 prompt。只用**严格前缀匹配**：
+            // clean_text() 会 html.unescape + 过滤控制字符，prompt 里若含
+            // "&amp;" 这类实体或控制字符，前缀就对不上 —— 此时宁可不显示，
+            // 也不用 indexOf / 去空白之类的猜测去"瞎算"一个错的字数（降级见 else）。
+            const prefixOk = promptStr.length > 0 && fullText.startsWith(promptStr);
+            const newLen = prefixOk ? fullLen - promptStr.length : null;
+            if (newLen !== null) {
+                // 新增字数与生成 token 数放一起，方便对照（两者口径不同，故意都保留）
+                let add = '新增 ' + newLen + ' 字';
+                if (typeof newTokens === 'number') add += '（' + newTokens + ' token）';
+                parts.push(add);
+                parts.push('全文 ' + fullLen + ' 字');
+            } else {
+                // 降级：切不出可靠的新增部分 → 只报全文，并写明它包含输入开头。
+                // 这一句不能省：否则用户又会把全文当成新增字数（正是原来的 bug）。
+                parts.push('全文 ' + fullLen + ' 字（含输入开头，新增字数无法判定）');
+                if (typeof newTokens === 'number') parts.push('新增 ' + newTokens + ' token');
+            }
+            // 中止时如实标注"这次没写完"——否则用户会以为模型只写了这么点
+            if (o.interrupted) parts.push('已中断，下文未生成');
+            parts.push('t' + o.temp + ' · p' + o.top_p + ' · r' + o.rep
+                       + ' · 最多 ' + o.maxTokens + ' token');
+            return parts.join(' · ');
+        }
+        const META_TITLE = 't=温度 · p=top_p · r=重复惩罚 · 「最多 N token」= 本次请求的生成长度上限\n'
+            + '字数按字符计（不是 token）：新增 = 本次新生成的文字，全文 = 新增 + 你输入的开头';
+
+        // ★ 收尾：**只有流正常结束 / 用户主动中止**才调用（出错不调用）。
+        //   集中在一处是为了守住原来的三条不变量：
+        //     · 半截结果**不进历史**（出错路径到不了这里）；
+        //     · meta / lastResult / pushHistory / updateContinueBtn 永远成套更新
+        //       （不会出现"细栏显示了耗时但「接着写」还锁着"这种中间态）。
+        //   用户主动中止是唯一的例外：那次结果**进历史** —— 见 abortGenerate 的说明，
+        //   已生成的部分是有效文本，用户点停止往往正是想留下它。
+        function finalizeStream(interrupted) {
+            streamCancelThrottle();
+            const fullText = streamAccum;
+            const params = {
+                temperature: parseFloat(el.temp.value),
+                top_p: parseFloat(el.topp.value),
+                repetition_penalty: parseFloat(el.rep.value),
+                max_tokens: parseInt(el.maxTokens.value, 10),
+            };
+            const meta = buildMetaText(fullText, streamElapsedMs, streamNewTokens, {
+                prompt: streamPrompt,
+                interrupted: !!interrupted,
+                temp: params.temperature, top_p: params.top_p,
+                rep: params.repetition_penalty, maxTokens: params.max_tokens,
+            });
+            el.meta.textContent = meta;
+            el.meta.title = META_TITLE;
+            lastResult = fullText;
+            lastMetaText = meta;
+            lastMetaTitle = el.meta.title;
+            el.actions.hidden = false;
+            pushHistory(streamPrompt, fullText, params);
+            updateContinueBtn();
+            // #debug 探针：加这个 hash 打开后，控制台能看到"首字延迟 / 帧数 / 总耗时"，
+            // 不用开 devtools 网络面板就能确认"文字真的是一帧一帧来的"。
+            // 平时（无 #debug）零开销、不打印任何东西。
+            if (location.hash === '#debug' && window.console) {
+                console.log('[stream] 首字延迟 %dms · 帧数 %d · 全文 %d 字 · 服务端耗时 %sms · 中断=%s',
+                            streamFirstFrameAt === null ? -1 : (streamFirstFrameAt - streamStartedAt),
+                            streamFrameCount, fullText.length, streamElapsedMs, !!interrupted);
+            }
+        }
+
+        // 打开流式渲染：调用点**必须**是成功 2xx 之后（否则半截的骨架会被当成结果）
+        function streamBegin(prompt) {
+            streamMode = true;
+            streamStartedAt = Date.now();
+            streamAccum = '';
+            streamPrompt = prompt;
+            streamElapsedMs = null;
+            streamNewTokens = null;
+            streamFrameCount = 0;
+            streamFirstFrameAt = null;
+            streamLastRenderAt = 0;
+            streamCancelThrottle();
+        }
+
+        // 逐帧解析。返回 true = 收到 done 帧（流正常走完）
+        function streamFeedText(text) {
+            streamBuffer += text;
+            let done = false;
+            let idx;
+            while ((idx = streamBuffer.indexOf('\n\n')) >= 0) {
+                const block = streamBuffer.slice(0, idx);
+                streamBuffer = streamBuffer.slice(idx + 2);
+                if (streamHandleFrame(block)) done = true;
+            }
+            return done;
+        }
+
+        // 一帧 SSE = 若干 `event:`/`data:` 行 + 一个空行（已在 streamFeedText 剥掉）
+        function streamHandleFrame(block) {
+            let event = '';
+            const dataLines = [];
+            for (const line of block.split('\n')) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+                // 其余行（注释/未知字段）按 SSE 规范忽略
+            }
+            if (!dataLines.length) return false;
+            let payload = null;
+            try { payload = JSON.parse(dataLines.join('\n')); } catch (e) { payload = null; }
+            if (!payload) return false;
+
+            if (event === 'error') {
+                throw new Error(typeof payload.message === 'string' && payload.message
+                    ? payload.message : '服务端流式生成出错');
+            }
+            if (event === 'done') {
+                if (typeof payload.elapsed_ms === 'number') streamElapsedMs = payload.elapsed_ms;
+                if (typeof payload.new_tokens === 'number') streamNewTokens = payload.new_tokens;
+                return true;
+            }
+            if (typeof payload.delta === 'string' && payload.delta) {
+                if (streamFrameCount === 0) streamFirstFrameAt = Date.now();
+                streamFrameCount += 1;
+                streamAccum += payload.delta;
+                streamRenderThrottled();
+            }
+            return false;
+        }
+
+        // 读一条流式响应，返回 done 帧是否到达
+        async function consumeStream(response) {
+            streamBuffer = '';
+            const reader = response.body.getReader();
+            // stream:true 让 TextDecoder 自己缓冲"跨 chunk 被切开的半个多字节字符"
+            // —— 与服务端的增量解码是同一个问题的两层（网络层 / token 层）
+            const decoder = new TextDecoder('utf-8');
+            let done = false;
+            for (;;) {
+                const r = await reader.read();
+                if (r.done) break;
+                if (r.value && r.value.length) {
+                    done = streamFeedText(decoder.decode(r.value, { stream: true })) || done;
+                }
+            }
+            // 收尾：把解码器里可能残留的半个字符吐出来（流正常结束时不会有残字，
+            // 但帧缓冲里可能还剩一个没被 \n\n 收尾的块 —— 一并处理，不丢内容）
+            streamFeedText(decoder.decode());
+            return done;
+        }
+
         async function generate() {
             // 防重入（二道保险）：按钮已被 disabled，这里再挡一次快捷键 / 程序化调用。
-            // 中止后 genLocked 会在 finally 里复位，所以「停止等待」完可以立刻重新生成。
+            // 中止后 genLocked 会在 finally 里复位，所以「停止生成」完可以立刻重新生成。
             if (genLocked) return;
 
             const prompt = el.prompt.value.trim();
@@ -1147,7 +1368,9 @@
             inflight = controller;
             const myRequest = controller;
 
-            // 快照"上次已渲染的结果"：中止时用它做可恢复回退（正文 + 细栏 + 动作条）。
+            // 快照"上次已渲染的结果"：**只给回退路径**用（不支持流式的浏览器走
+            // /generate 一次性请求，中止时手上没有增量文本，只能恢复上一次结果）。
+            // 流式路径不靠它 —— 流式中止保留的是本次已生成的半截文字。
             // 先快照再 showSkeleton() —— showSkeleton() 会清空 el.article。
             if (!el.article.hidden) {
                 lastResult = el.article.textContent;
@@ -1161,7 +1384,7 @@
             el.genBtn.textContent = '正在续写…';
             el.resetBtn.disabled = true;
             updateContinueBtn();   // 「接着写」同样锁住（结果条此刻也会被隐藏，双保险）
-            // 「停止等待」只在请求进行中出现（不支持 AbortController 的浏览器 → 永不显示）
+            // 「停止生成」只在请求进行中出现（不支持 AbortController 的浏览器 → 永不显示）
             el.abortBtn.disabled = false;
             setHidden(el.abortRow, !canAbort);
             el.meta.textContent = '';
@@ -1169,11 +1392,15 @@
             showSkeleton();
             scrollToReading();   // 不阻塞用户滚动：只是文本，没有遮罩
 
+            streamMode = false;
             try {
-                const response = await fetch('/generate', {
+                // ★ 流式优先：POST /generate/stream（SSE，逐 token 到达）。
+                //   不支持流式的浏览器退回旧的 /generate（字段/行为一字未改）。
+                const useStream = canStream;
+                const response = await fetch(useStream ? '/generate/stream' : '/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    // signal 必须传进去，否则 abort() 无法中断这次等待
+                    // signal 必须传进去，否则 abort() 无法中断这次等待/这条流
                     signal: myRequest ? myRequest.signal : undefined,
                     body: JSON.stringify({
                         prompt: prompt,
@@ -1184,14 +1411,14 @@
                     }),
                 });
 
-                // ★ 原来这里直接 response.json()，从不检查 response.ok →
-                //   后端真实错误（422 / 500 detail）永远看不到，只会显示写死的
-                //   "生成失败，请重试"。现在先把原始文本读出来，再判断状态码。
-                const raw = await response.text();
-                let data = null;
-                try { data = JSON.parse(raw); } catch (e) { /* 非 JSON（如 500 纯文本） */ }
-
+                // ★ 先判 response.ok：FastAPI 的 422/500 都是 JSON 体（非 2xx），
+                //   必须走旧的 response.text() + JSON.parse + extractDetail() 路径。
+                //   ⚠️ 2xx 才进流 —— 否则会把错误 JSON 当正文渲染出来。
                 if (!response.ok) {
+                    // 错误体很小，一次性读没问题（流式响应出错时这里也不会被调用）
+                    const raw = await response.text();
+                    let data = null;
+                    try { data = JSON.parse(raw); } catch (e) { /* 非 JSON（如 500 纯文本） */ }
                     const detail = data ? extractDetail(data, response.status) : (raw || '未知错误');
                     showError('生成失败（HTTP ' + response.status + '）：' + detail,
                               '请求没有成功，模型状态未被修改。可以检查后端进程是否还在运行，'
@@ -1200,60 +1427,56 @@
                     return;
                 }
 
-                showResult(data.text);
-                lastResult = data.text;   // 供"中止回退"用：记录刚渲染成功的结果
-                const parts = [];
-                // 耗时用服务端实测值（前端 Date.now 含网络往返/排队，仅供参考）
-                parts.push(typeof data.elapsed_ms === 'number'
-                    ? '耗时 ' + (data.elapsed_ms / 1000).toFixed(1) + 's' : '耗时未知');
-
-                // -----------------------------------------------------------
-                // ★ 字数口径（修正"细栏撒谎"）：data.text 是**全文** = prompt + 新生成。
-                //   服务端 /generate 里 result = clean_text(decode(ctx_ids))，
-                //   而 ctx_ids 含用户输入的 prompt 前缀，所以 text 从头就是 prompt。
-                //   ⚠️ 单位是**字符**数（String.length，UTF-16 码元），**不是 token 数**：
-                //      中文大致 1 字 ≈ 1 token，但两者从来不是一回事（英文/标点差得远），
-                //      所以 token 数一律取服务端实测的 new_tokens，绝不拿字数冒充 token。
-                //   历史问题：这里只写 "N 字" 却填的是全文长度，用户拿 txt 一量
-                //   （txt 里只有新生成的部分）就以为页面在撒谎 → 两个数其实都没算错，
-                //   错在标签含糊。现在把「新增」和「全文」分开写清楚。
-                // -----------------------------------------------------------
-                const fullLen = data.text.length;              // 全文（含输入开头）字符数
-                const promptStr = (typeof data.prompt === 'string') ? data.prompt : '';
-                // 新生成部分 = text 去掉开头的 prompt。只用**严格前缀匹配**：
-                // clean_text() 会 html.unescape + 过滤控制字符，prompt 里若含
-                // "&amp;" 这类实体或控制字符，前缀就对不上 —— 此时宁可不显示，
-                // 也不用 indexOf / 去空白之类的猜测去"瞎算"一个错的字数（降级见 else）。
-                const prefixOk = promptStr.length > 0 && data.text.startsWith(promptStr);
-                const newLen = prefixOk ? fullLen - promptStr.length : null;
-
-                if (newLen !== null) {
-                    // 新增字数与生成 token 数放一起，方便对照（两者口径不同，故意都保留）
-                    let add = '新增 ' + newLen + ' 字';
-                    if (typeof data.new_tokens === 'number') add += '（' + data.new_tokens + ' token）';
-                    parts.push(add);
-                    parts.push('全文 ' + fullLen + ' 字');
-                } else {
-                    // 降级：切不出可靠的新增部分 → 只报全文，并写明它包含输入开头。
-                    // 这一句不能省：否则用户又会把全文当成新增字数（正是原来的 bug）。
-                    parts.push('全文 ' + fullLen + ' 字（含输入开头，新增字数无法判定）');
-                    if (typeof data.new_tokens === 'number') parts.push('新增 ' + data.new_tokens + ' token');
+                if (useStream) {
+                    streamBegin(prompt);
+                    const gotDone = await consumeStream(response);
+                    if (!gotDone) {
+                        // 流结束但没有 done 帧 = 连接被中途掐断（服务端崩/代理超时）。
+                        // 不装作成功，但也不丢掉已经收到的正文 —— 如实标注。
+                        streamRenderNow();
+                        if (!streamAccum) {
+                            showError('流式中断：没有收到任何内容',
+                                      '连接在收到第一段文字之前就结束了。请确认后端仍在运行后重试。');
+                            toast('流式中断', 'err');
+                            return;
+                        }
+                        finalizeStream(true);
+                        toast('流已中断，以上为中途中止前已生成的内容', 'err');
+                        return;
+                    }
+                    // 收尾补绘一次：节流可能还压着最后一帧没画
+                    streamRenderNow();
+                    finalizeStream(false);
+                    scrollToReading();
+                    return;
                 }
 
-                // 参数：t/p/r 与左侧滑条一一对应；n 原来只写 "n490"，
-                // 既看不出是 max_tokens 也看不出单位 → 改成带单位、不致误解的写法。
-                parts.push('t' + temp + ' · p' + top_p + ' · r' + rep + ' · 最多 ' + maxTokens + ' token');
-                el.meta.textContent = parts.join(' · ');
-                lastMetaText = el.meta.textContent;   // 与 lastResult 成套保存，供中止回退
+                // ---------------- 回退路径：旧的 /generate ----------------
+                const raw = await response.text();
+                let data = null;
+                try { data = JSON.parse(raw); } catch (e) { /* 非 JSON */ }
+                if (!data || typeof data.text !== 'string') {
+                    showError('生成失败：服务端返回的不是预期的 JSON',
+                              '请检查后端版本是否与前端一致（异常时 /generate 会返回错误详情）。');
+                    toast('生成失败，详情见阅读区', 'err');
+                    return;
+                }
+
+                showResult(data.text);
+                lastResult = data.text;   // 供"中止回退"用：记录刚渲染成功的结果
+                const meta = buildMetaText(data.text, data.elapsed_ms, data.new_tokens, {
+                    prompt: (typeof data.prompt === 'string') ? data.prompt : '',
+                    interrupted: false,
+                    temp: temp, top_p: top_p, rep: rep, maxTokens: maxTokens,
+                });
+                el.meta.textContent = meta;
+                lastMetaText = meta;      // 与 lastResult 成套保存，供中止回退
                 // 悬停解释缩写与字数口径（只设 title 属性，不碰任何视觉样式）
-                el.meta.title = 't=温度 · p=top_p · r=重复惩罚 · 「最多 N token」= 本次请求的生成长度上限\n'
-                    + '字数按字符计（不是 token）：新增 = 本次新生成的文字，全文 = 新增 + 你输入的开头';
+                el.meta.title = META_TITLE;
                 lastMetaTitle = el.meta.title;
                 el.actions.hidden = false;
 
                 // 历史记录：只有"完整成功"的这一次生成才入库。
-                // ⚠️ 中止（AbortError）与各 4xx/5xx 都在上面 return / 走了别的分支，
-                //    永远到不了这一行 → 半截/失败的结果不会污染历史。
                 pushHistory(prompt, data.text, {
                     temperature: temp, top_p: top_p,
                     repetition_penalty: rep, max_tokens: maxTokens,
@@ -1264,19 +1487,41 @@
                 scrollToReading();
             } catch (e) {
                 // ★ 中止必须与真正的网络失败分开处理：
-                //   AbortError 是**用户主动操作**（点了「停止等待」），不是故障，
-                //   所以绝不显示"请求失败/网络错误"，也不写错误态，
-                //   只把阅读区恢复到可用状态 + 一句如实说明。
+                //   AbortError 是**用户主动操作**（点了「停止生成」），不是故障。
                 if (e && e.name === 'AbortError') {
-                    restoreAfterAbort();
-                    // 提到「服务端可能仍在完成」：只中止了前端等待，后端那次推理照旧在算
-                    toast('已停止等待（服务端可能仍在完成本次请求）');
+                    if (streamMode) {
+                        // 流式：**保留已生成的部分**并正常收尾。
+                        //   用户点停止是想留下已写的内容，不是想让它消失。
+                        //   若一帧都还没到（prefill 阶段就停），下面不会有内容可留，
+                        //   退回骨架 → 空态/上一次结果，别留一个空白阅读区。
+                        streamRenderNow();
+                        if (streamAccum) {
+                            finalizeStream(true);
+                            toast('已停止生成（已保留写出的部分，可接着写）');
+                        } else {
+                            restoreAfterAbort();
+                            toast('已停止生成（还没开始输出文字）');
+                        }
+                    } else {
+                        // 回退路径（/generate）：中止只是停止前端等待，服务端那次推理
+                        // 照旧算完，所以手上什么都没有 → 恢复上一次结果。
+                        restoreAfterAbort();
+                        toast('已停止等待（服务端可能仍在完成本次请求）');
+                    }
                 } else {
-                    // 只有真正的网络层失败才到这里（后端 4xx/5xx 已在上面处理）
-                    showError('请求失败：' + (e && e.message ? e.message : '无法连接服务端'),
-                              '请确认后端进程还在运行（python app/server.py），然后重试。');
-                    el.meta.textContent = '';
-                    toast('网络错误', 'err');
+                    // 只有真正的网络层失败 / 流中途出错才到这里（4xx/5xx 已在上面处理）。
+                    // ⚠️ 流式下若已经渲染了正文 → 不覆盖成错误态（那些文字是真的），
+                    //    改走"保留 + 标注中断"。
+                    if (streamMode && streamAccum) {
+                        streamRenderNow();
+                        finalizeStream(true);
+                        toast('生成中断：' + (e && e.message ? e.message : '流读取失败'), 'err');
+                    } else {
+                        showError('请求失败：' + (e && e.message ? e.message : '无法连接服务端'),
+                                  '请确认后端进程还在运行（python app/server.py），然后重试。');
+                        el.meta.textContent = '';
+                        toast('网络错误', 'err');
+                    }
                 }
             } finally {
                 // 状态复位（中止 / 成功 / 失败都要走这里 → 按钮总会恢复可用）。
@@ -1305,7 +1550,8 @@
         //       上一轮的全文，于是可以一段接一段地滚下去。
         //
         // ★★★ 这条链子**依赖**后端的一个"截断"行为，改之前务必读懂 ★★★
-        //   model/generation.py:33   prompt_ids = list(prompt_ids[-gpt.block_size:])
+        //   model/generation.py 的 stream_ids() / generate_ids() 里
+        //   `prompt_ids = list(prompt_ids[-block:])`
         //   —— 超过 block_size（本机 512）的 prompt 会被**静默砍掉头部、只留尾部**。
         //   连续续写两三轮后 prompt 必然远超 512，于是每次真正进模型的只有最近 512 个
         //   token。这**正好是我们要的**：接着往下写靠的是上下文的尾部（语气的惯性、
@@ -1430,9 +1676,11 @@
             showEmpty();
             el.meta.textContent = '';
             el.actions.hidden = true;
-            // ★ 清空 = 用户明确丢弃这份结果 → 连"中止回退"用的快照一起清掉。
-            //   否则清空后再发一次请求、中途点「停止等待」，restoreAfterAbort() 会把
-            //   刚被清掉的旧正文又"复活"出来（历史遗留行为，顺手修掉）。
+            // ★ 清空 = 用户明确丢弃这份结果 → 把"接着写"的起点一起清掉，
+            //   也把回退路径（不支持流式的浏览器）要用的快照清掉。
+            //   否则清空后再发一次请求、中途点「停止生成」：流式路径会保留半截正文、
+            //   回退路径的 restoreAfterAbort() 会把刚被清掉的旧正文"复活"出来。
+            //   （历史遗留行为，顺手修掉。）
             // ★ 清空**只影响阅读区**：历史记录是独立的一份，照旧保留（见报告里的取舍）。
             lastResult = null;
             lastMetaText = '';

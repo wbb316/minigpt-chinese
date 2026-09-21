@@ -203,10 +203,14 @@ python app/server.py
 
 # 页面能力：模型信息条（显示当前实际加载的规格，权重缺失走回退时会显式提示）
 #           解码参数四个滑块（温度 / top_p / 重复惩罚 / 生成长度）
+#           **流式逐字输出**（SSE，首字 ~25ms 出现，不用等整段算完）
+#           停止生成（客户端断开 → 服务端一步都不多算）· 接着写 · 历史记录（localStorage，20 条）
 #           暗色模式（跟随系统）· Cmd/Ctrl+Enter 提交 · 页内 toast · 剪贴板降级
-# 接口：GET /health · GET /model-info（当前模型规格）· POST /generate
-#       POST /generate 请求体字段（prompt/max_tokens/temperature/top_p/repetition_penalty）
-#       与历史契约一致，仅新增响应字段 elapsed_ms / new_tokens
+# 接口：GET /health · GET /model-info（当前模型规格）
+#       POST /generate        一次性返回（契约与历史一致，响应字段 elapsed_ms / new_tokens）
+#       POST /generate/stream 流式 SSE：`data: {"delta": "..."}` 逐 token 推文本，
+#                             末尾 `event: done` + {"elapsed_ms","new_tokens"}，出错 `event: error`
+#       两者请求体字段相同（prompt/max_tokens/temperature/top_p/repetition_penalty）
 
 # 想用 100M v3_beta 或别的存档：显式传参覆盖默认即可
 python app/server.py --ckpt result/100M参数v3+2Btokens/checkpoint_best.pt \
