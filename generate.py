@@ -9,6 +9,17 @@
 用法:
     python generate.py               # 验证一致性 + 计时对比 + 示例生成
     python generate.py --demo        # 只跑示例生成（用 KV cache）
+
+⚠️ max_overrun（2026-09-20 性能修复，本文件第二份生成循环同步修复）：
+    旧实现的 cache 版一满窗就**每步**整段重建（20M/block256 实测 8.0 → 41.5 ms/token）。
+    `max_overrun` 允许缓存超窗若干步再重建，把重建成本摊薄。默认 **64**
+（实测甜点：50M/block512/prompt512 下 64 → 35.7 ms/token 最快，128/256 反而略慢且文本质量退化）。
+    · `--max-overrun 0` = 修复前行为（逐位一致），可与默认值对比加速比；
+    · 超窗期间位置索引超过 block_size，位置表由 ensure_pos_capacity() 就地扩长
+      （确定性三角函数，无新参数）；
+    · 代价：重锚时刻变化 → **同一 seed 下 cache 版文本可能与"原版"分支不同**
+      （当总长度超过 block_size 时；默认小 prompt 跑不到窗口上限，仍然一致）。
+      这是已确认接受的取舍，不是 bug。
 """
 import argparse
 import os
@@ -24,7 +35,7 @@ sys.path.insert(0, ROOT)
 
 from model.gpt import GPT  # noqa: E402
 from model.sampling import sample  # noqa: E402
-from model.generation import generate_ids  # noqa: E402
+from model.generation import generate_ids, ensure_pos_capacity  # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -80,8 +91,11 @@ def _sample(logits, temperature, rng, top_p=1.0, repetition_penalty=1.0,
 
 def generate(gpt, tokenizer, prompt, max_new_tokens=50, temperature=1.0,
              top_p=1.0, repetition_penalty=1.0,
-             use_cache=False, seed=0):
-    """续写。use_cache=True 用 KV cache 加速（预填充后每步只算新 token）。"""
+             use_cache=False, seed=0, max_overrun=64):
+    """续写。use_cache=True 用 KV cache 加速（预填充后每步只算新 token）。
+
+    max_overrun: cache 版允许超窗的步数（见模块 docstring）；0 = 修复前行为。
+    """
     ids = tokenizer.encode(prompt)
     idx = torch.tensor(ids[-gpt.block_size:], device=device).unsqueeze(0)
     rng = torch.Generator(device=device).manual_seed(seed)
@@ -89,6 +103,12 @@ def generate(gpt, tokenizer, prompt, max_new_tokens=50, temperature=1.0,
     all_ids = list(ctx)
 
     if use_cache:
+        # 超窗重锚前先把位置表建长（越界是静默的，必须提前扩）
+        if max_overrun < 0:
+            raise ValueError(f'max_overrun 不能为负，得到 {max_overrun}')
+        limit = gpt.block_size + max_overrun
+        if max_overrun > 0:
+            ensure_pos_capacity(gpt, limit)
         # 预填充：完整前向一次，拿到所有层的 KV 缓存 + 全部位置的 logits
         logits, kvs = gpt(idx, return_kv=True)
     else:
@@ -103,8 +123,8 @@ def generate(gpt, tokenizer, prompt, max_new_tokens=50, temperature=1.0,
         all_ids.append(nid)
 
         if use_cache:
-            # 下步：只喂刚生成的 token，复用缓存；缓存将超窗则重建
-            if kvs[0][0].size(2) + 1 > gpt.block_size:
+            # 下步：只喂刚生成的 token，复用缓存；缓存将超过 block_size+max_overrun 则重建
+            if kvs[0][0].size(2) + 1 > limit:
                 wx = torch.tensor([all_ids[-gpt.block_size:]],
                                   device=device)
                 logits, kvs = gpt(wx, return_kv=True)
@@ -149,10 +169,16 @@ def verify_identical(gpt, tokenizer, prompt, n_steps=30):
     print(f'✓ 逐位置 logits 最大差异: {max_diff:.3e}（<1e-4，KV cache 与原版一致）')
 
 
-def benchmark(gpt, tokenizer, prompt, max_new_tokens=100, seed=42):
-    """计时对比：同一 seed 下原版 vs KV cache，各生成 max_new_tokens 个 token。"""
-    # 预跑一次热身（排除加载/缓存开销）
-    generate(gpt, tokenizer, prompt, max_new_tokens=5, use_cache=True, seed=seed)
+def benchmark(gpt, tokenizer, prompt, max_new_tokens=100, seed=42,
+              max_overrun=64):
+    """计时对比：同一 seed 下原版 vs KV cache，各生成 max_new_tokens 个 token。
+
+    max_overrun 只影响 cache 版（原版每步重算整段，与它无关）。传 0 即修复前行为，
+    可用于跑出"修复前后"对比表。
+    """
+    # 预跑一次热身（排除加载/缓存开销；顺带把位置表扩好，不计入计时）
+    generate(gpt, tokenizer, prompt, max_new_tokens=5, use_cache=True, seed=seed,
+             max_overrun=max_overrun)
     generate(gpt, tokenizer, prompt, max_new_tokens=5, use_cache=False, seed=seed)
 
     t0 = time.perf_counter()
@@ -162,14 +188,22 @@ def benchmark(gpt, tokenizer, prompt, max_new_tokens=100, seed=42):
 
     t0 = time.perf_counter()
     text_new = generate(gpt, tokenizer, prompt, max_new_tokens=max_new_tokens,
-                        use_cache=True, seed=seed)
+                        use_cache=True, seed=seed, max_overrun=max_overrun)
     t_new = time.perf_counter() - t0
 
-    print(f'\n===== 计时对比 (生成 {max_new_tokens} 个 token) =====')
+    print(f'\n===== 计时对比 (生成 {max_new_tokens} 个 token, '
+          f'max_overrun={max_overrun}) =====')
     print(f'原版(整序列重算):  {t_old:.3f}s')
     print(f'KV cache 版:       {t_new:.3f}s')
     print(f'加速比:            {t_old / t_new:.2f}x')
-    print(f'采样结果一致: {"✓ 相同文本" if text_old == text_new else "✗ 文本不同"}')
+    if text_old == text_new:
+        print('采样结果一致: ✓ 相同文本')
+    else:
+        # 只有总长超过 block_size 时才会走到这里：max_overrun>0 改变了重锚时刻，
+        # 上下文锚定不同 → 轨迹分叉，属预期（用户已接受的取舍）
+        print(f'采样结果一致: ✗ 文本不同（max_overrun={max_overrun}；'
+              '总长超过 block_size 时重锚时刻变化导致轨迹分叉，属预期）'
+              if max_overrun > 0 else '采样结果一致: ✗ 文本不同（不应发生！）')
     return text_old, text_new
 
 
@@ -189,6 +223,9 @@ def main():
                         help='模型权重路径')
     parser.add_argument('--tokenizer', default='result/35M参数+998Mtokens/tokenizer_best.pkl',
                         help='分词器 pkl 路径')
+    parser.add_argument('--max-overrun', type=int, default=64,
+                        help='KV cache 允许超出 block_size 的步数（超窗重建降频）；'
+                             '0 = 修复前行为，用于跑前后对比')
     args = parser.parse_args()
 
     gpt, tokenizer = load_model(ckpt_path=args.ckpt, tok_path=args.tokenizer,
@@ -200,7 +237,8 @@ def main():
     if args.demo:
         for p in prompts:
             out = generate(gpt, tokenizer, p, max_new_tokens=args.max_new_tokens,
-                           temperature=args.temperature, use_cache=True, **kw)
+                           temperature=args.temperature, use_cache=True,
+                           max_overrun=args.max_overrun, **kw)
             print(f'\n【{p}】→\n{out}')
         return
 
@@ -211,13 +249,15 @@ def main():
     # 2) 计时对比（同时再次验证同 seed 文本一致）
     print('\n---- 计时对比 ----')
     text_old, text_new = benchmark(gpt, tokenizer, prompts[0],
-                                   max_new_tokens=args.max_new_tokens)
+                                   max_new_tokens=args.max_new_tokens,
+                                   max_overrun=args.max_overrun)
 
     # 3) 示例生成
     print('\n---- 示例生成 (KV cache) ----')
     for p in prompts:
         out = generate(gpt, tokenizer, p, max_new_tokens=args.max_new_tokens,
-                       temperature=args.temperature, use_cache=True, **kw)
+                       temperature=args.temperature, use_cache=True,
+                       max_overrun=args.max_overrun, **kw)
         print(f'\n【{p}】→\n{out}')
 
 

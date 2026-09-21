@@ -33,19 +33,36 @@ class GPT(nn.Module):
                  n_embd: int, block_size: int, dropout: float = 0.0,
                  tie_embeddings: bool = False,
                  position_encoding: str = 'rope',
-                 ff_type: str = DEFAULT_FF_TYPE, ff_hidden: int | None = None):
+                 ff_type: str = DEFAULT_FF_TYPE, ff_hidden: int | None = None,
+                 rope_extra_len: int = 0):
         """position_encoding: 'rope'(默认——2026-09-06 短训对比胜出) |
         'sinusoidal'（旧实现，复现旧模型用）。
 
         ff_type: 'swiglu'（默认，2026-09-08 短程对照胜出）| 'relu'（v3_alpha 原 FFN，
         可回退）| 'gelu'；ff_hidden: 仅 swiglu 用，缺省按参数量对齐 4d 自动求解。
 
+        rope_extra_len: 位置编码表**多建**的长度（表长 = block_size + rope_extra_len）。
+            RoPE 的 cos/sin（以及 sinusoidal 的 pe）都是**无参数的确定性三角函数**，
+            加长表不引入任何新参数，只是把合法位置索引范围放大到
+            [0, block_size + rope_extra_len)。**默认 0 = 与旧行为逐位一致**
+            （训练侧 train/train.py 不传 → 完全不变）。
+            仅推理需要：KV cache 允许超窗 max_overrun 步时位置索引会到
+            block_size + max_overrun - 1，可用本参数或生成侧的
+            generation.ensure_pos_capacity()（后者可在拿到已建好的模型后就地扩表）。
+
+            ⚠️ 注意 checkpoint 兼容性：cos/sin/pe 是**持久化 buffer**，旧存档里它们
+            只有 block_size 长。传 rope_extra_len>0 之后再 load_state_dict(sd)
+            （strict=True）会因 shape 不匹配报错 —— 要么 strict=False，要么用
+            ensure_pos_capacity() 在 load 之后扩表。
+
         注意：加载旧 checkpoint（v3_alpha / v2 系列，FFN=ReLU）时，推理侧
         （generate.py / app/server.py / visualize_attention.py）会从 state_dict
         自动检测 ff_type，不受本默认值影响。
         """
         super().__init__()
+        assert rope_extra_len >= 0, f'rope_extra_len 不能为负，得到 {rope_extra_len}'
         self.block_size = block_size
+        self.rope_extra_len = rope_extra_len
         self.vocab_size = vocab_size
         self.tie_embeddings = tie_embeddings
         self.n_layer = n_layer
@@ -56,14 +73,17 @@ class GPT(nn.Module):
             raise ValueError(f'ff_type 仅支持 {FF_TYPES}，得到 {ff_type!r}')
         self.ff_type = ff_type
         self.token_emb = nn.Embedding(vocab_size, n_embd)
-        self.pos_emb = PositionalEncoding(n_embd, max_len=block_size)
+        # sinusoidal 表也一起加长（同一语义：位置索引必须落在表内）
+        self.pos_emb = PositionalEncoding(n_embd, max_len=block_size,
+                                          extra_len=rope_extra_len)
         self.drop = nn.Dropout(dropout)                            # ★ embedding dropout
         # RoPE：sinusoidal 模式 rope=None（旧行为不变）；rope 模式建旋转器（共享各层）
         rope = None
         if position_encoding == 'rope':
             from model.rope import RotaryEmbedding  # noqa: E402
             rope = RotaryEmbedding(dim=n_embd // n_head,
-                                   max_seq_len=block_size)
+                                   max_seq_len=block_size,
+                                   extra_len=rope_extra_len)
             self.rope = rope
         self.blocks = nn.ModuleList(
             [Block(n_embd, n_head, dropout=dropout, rope=rope,

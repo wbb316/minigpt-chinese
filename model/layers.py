@@ -18,18 +18,60 @@ class LayerNorm(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, dim:int, max_len:int =1024):
+    """经典 sinusoidal 位置编码（可切换，见 GPT(position_encoding=...)）。
+
+    ⚠️ 与 model/rope.py 同款坑：forward 里 `pe[:, start:start+T]` 是普通切片，
+       位置越界**不报错** —— T=1（增量解码）时切片变空，(1,0,C) 与 (B,1,C) 广播后
+       位置向量被整个跳过，输出"看起来正常"但位置信息丢光。故这里做显式范围检查。
+    """
+
+    def __init__(self, dim:int, max_len:int =1024, extra_len: int = 0):
         super().__init__()
-        pe = torch.zeros(max_len, dim)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        dim_term=torch.exp(torch.arange(0, dim, 2).float() * (-torch.log(torch.tensor(10000.0)) / dim))
-        pe[:, 0::2] = torch.sin(position * dim_term)
-        pe[:, 1::2] = torch.cos(position * dim_term)
+        assert extra_len >= 0, f'extra_len 不能为负，得到 {extra_len}'
+        self.dim = dim
+        self.max_len = max_len
+        self.extra_len = extra_len
+        # dim_term 存成属性：extend_to() 需要用它按**同一公式**续算新位置
+        self.dim_term = torch.exp(torch.arange(0, dim, 2).float()
+                                  * (-torch.log(torch.tensor(10000.0)) / dim))
+        pe = torch.zeros(max_len + extra_len, dim)
+        position = torch.arange(0, max_len + extra_len, dtype=torch.float).unsqueeze(1)
+        pe[:, 0::2] = torch.sin(position * self.dim_term)
+        pe[:, 1::2] = torch.cos(position * self.dim_term)
         self.register_buffer('pe', pe.unsqueeze(0))
+
+    def extend_to(self, total_len: int) -> int:
+        """把 pe 表**就地**增长到至少 total_len（幂等；无参数，只是多算几行 sin/cos）。
+
+        返回增长到的表长；total_len <= 当前表长时不做任何事。
+        续算行沿用与原表完全相同的公式/dtype/设备，旧行原样保留。
+        """
+        cur = self.pe.size(1)
+        if total_len <= cur:
+            return cur
+        position = torch.arange(cur, total_len, dtype=torch.float,
+                                device=self.pe.device).unsqueeze(1)
+        term = self.dim_term.to(self.pe.device)
+        new_pe = torch.zeros(total_len - cur, self.dim, device=self.pe.device,
+                             dtype=self.pe.dtype)
+        new_pe[:, 0::2] = torch.sin(position * term)
+        new_pe[:, 1::2] = torch.cos(position * term)
+        self.pe = torch.cat([self.pe, new_pe.unsqueeze(0)], dim=1)
+        self.extra_len = self.pe.size(1) - self.max_len
+        return self.pe.size(1)
 
     def forward(self, x, start: int = 0):
         """start: 起始位置偏移（KV cache 增量解码时，新 token 的全局位置 = 缓存长度）。"""
-        return x + self.pe[:, start:start + x.size(1)]
+        T = x.size(1)
+        pe_len = self.pe.size(1)
+        if start + T > pe_len:
+            raise IndexError(
+                f'sinusoidal 位置越界：start={start}, T={T} → 需要表长 >= {start + T}，'
+                f'但 pe 表长只有 {pe_len}（max_len={self.max_len}, '
+                f'extra_len={self.extra_len}）。越界时 T=1 会静默丢掉位置向量。'
+                f'请扩表：PositionalEncoding(..., extra_len=N) / '
+                f'GPT(rope_extra_len=N) / generation.ensure_pos_capacity(gpt, N)。')
+        return x + self.pe[:, start:start + T]
 
 
 # ---------------------------------------------------------------------------
