@@ -159,10 +159,16 @@ minigpt-chinese/
 │   └── train.py        # 主训练脚本（resume / lr-scheme / AMP 门控 / grad-accum / 精确 tokens_seen）
 ├── app/
 │   ├── server.py       # FastAPI 后端（默认加载 v3_gamma 150M；架构由 RoPE head_dim 自动推断；
-│   │                   #   GET /model-info 暴露当前实际加载的模型规格与是否走了回退）
-│   └── templates/index.html  # 前端（非模板引擎，open() 原样返回；解码参数滑块 / 模型信息条 / 暗色模式）
-├── test/               # pytest：124 个用例（BPE 与 encode 等价性 / 模型与注意力 / RoPE / FFN 变体 /
-│                       #   数据集与采样器 / 过拟合冒烟 / perf_bench 解析与变体矩阵）
+│   │                   #   GET /model-info 暴露当前实际加载的模型规格与是否走了回退；
+│   │                   #   挂载 /static 提供前端静态资源）
+│   ├── templates/
+│   │   └── index.html  # 前端骨架（非模板引擎，open() 原样返回；仅 HTML 结构与文案）
+│   └── static/         # 前端资源（零依赖、无构建步骤，由 /static 直接发）
+│       ├── css/style.css  # 样式（文学阅读风 / 纸质感 / 暗色模式 / 响应式）
+│       └── js/app.js      # 逻辑（流式 SSE 消费 / 参数滑块 / 历史记录 / 模型信息条）
+├── test/               # pytest：200 个用例（BPE 与 encode 等价性 / 模型与注意力 / RoPE / FFN 变体 /
+│                       #   数据集与采样器 / 过拟合冒烟 / perf_bench 解析与变体矩阵 /
+│                       #   流式增量解码与 stream_ids 等价性 / SSE 帧契约）
 ├── benchmark/          # 性能基准（perf_bench.py + performance_results.csv + performance_summary.csv）
 ├── generate.py         # 生成（默认 v2 35M）+ KV cache 一致性验证
 ├── visualize_attention.py  # 注意力热力图

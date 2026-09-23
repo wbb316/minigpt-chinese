@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 import torch
 import pickle
@@ -301,6 +302,14 @@ app = FastAPI(
     description='从零实现的 Transformer 中文续写服务',
     version='0.3',
 )
+
+# ★ 静态资源（前端拆出来的 CSS/JS）。仍然零依赖、无构建步骤：
+#   只是把原来内联在 index.html 里的两个块改成同源文件，由 FastAPI 直接发。
+#   ⚠️ 挂载路径必须与 index.html 里的 href 前缀一致（/static/...），
+#      改了一边必须改另一边，否则页面会“没样式 + 没逻辑”地空白渲染。
+#   ⚠️ StaticFiles 只服务这个目录，不做目录穿越 —— 不要把它挂到项目根。
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+app.mount('/static', StaticFiles(directory=_STATIC_DIR), name='static')
 
 class Generation(BaseModel):
     prompt: str

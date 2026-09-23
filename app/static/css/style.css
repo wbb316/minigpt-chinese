@@ -1,0 +1,565 @@
+
+        /* ============================================================
+           设计语言：文学阅读风（衬线 / 米色书页 / 赭墨单强调色）
+           零依赖：无框架、无 CDN、无 webfont、无外部图片。
+           所有质感用原生 CSS + 一行 SVG 噪点 data-URI 实现。
+           ============================================================ */
+        :root {
+            /* ---- 配色：暖中性 + 单一赭墨强调（粉紫色系已彻底移除） ---- */
+            --paper:        #f7f4ef;   /* 页面底：暖米 */
+            --sheet:        #fffdf9;   /* 阅读面：纸 */
+            --sheet-2:      #fdfaf4;   /* 纸的次层 / 渐变末 */
+            --sheet-edge:   #eae4da;   /* 纸的 1px 边 */
+            --ink:          #2b2825;   /* 正文（非纯黑） */
+            --ink-2:        #57514a;   /* 次要文字 */
+            --ink-3:         #6e6759;   /* 弱化文字。定稿 #736c62，这里压深一档：
+                                            加了纸面颗粒后 #736c62 在颗粒深处会掉到 4.2:1，
+                                            压到 #6e6759 后实测 4.58:1（颗粒 p99 处）仍达 AA */
+            --accent:       #8c5a3c;   /* 赭墨：唯一强调色 */
+            --accent-soft:  rgba(140, 90, 60, .10);
+            --accent-2:     #5f7a5a;   /* 松绿：仅成功态 */
+            --rule:         #e3ddd2;   /* 细线 */
+            --warn:         #9a6b1f;   /* 回退提示 / 错误态 */
+            --warn-soft:    rgba(154, 107, 31, .09);
+            --danger:       #9c3b2e;   /* 空输入红边（偏砖红，不刺眼） */
+
+            /* ---- 实底控件上的文字色。
+                   亮色下用纸白；暗色下赭墨/松绿都变亮了，纸白会掉到 3:1 以下，
+                   所以在暗色块里换成深墨（见下方 @media）。---- */
+            --on-accent:    #fffdf9;   /* 对 --accent 5.7:1 */
+            --on-warn:      #fffdf9;   /* 对 --danger 6.7:1 */
+            --on-ok:        #fffdf9;   /* 对 --accent-2 4.7:1 */
+
+            /* ---- 排版 ---- */
+            --font-ui:    -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+            --font-serif: Georgia, Cambria, "Times New Roman", "Songti SC", "SimSun", serif;
+
+            /* ---- 尺度 ---- */
+            --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+            --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+            --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+            --shadow-soft: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 24px rgba(0, 0, 0, .05);
+            --shadow-toast: 0 8px 24px rgba(0, 0, 0, .16);
+
+            /* ---- 纸面：极淡双渐变 + 极淡噪点 ----
+               ⚠️ 三个坑，都踩过：
+               1) data-URI 里的 '#' 必须写成 %23，否则整条声明被截断；
+               2) feTurbulence 输出的噪声是**全幅**的（实测 alpha 均值 0.29、
+                  峰值 0.53），直接铺在纸色上等于盖了一层灰纱，会把正文对比度
+                  打到 3.7:1、弱化文字打到 1.3:1。所以必须再用很低的 opacity
+                  压淡 → 噪点单独做成 --grain 图层，由 --grain-opacity 控制，
+                  而不是拼进 --sheet-bg 里。
+               3) SVG 里 rect 只取噪声的 alpha 通道（不填色）→ 颗粒是**纯中性**的，
+                  不会把暖米纸拉成灰绿。 */
+            --noise: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+            --grain: var(--noise);            /* 单独一层的噪点，供 body::before 使用 */
+            --grain-opacity: .10;             /* 实测：p50 拉动 7/255、p99 13/255 —— 看得见纸感，
+                                                 又不至于把 --ink-3 的对比度压到 AA 以下 */
+            --sheet-bg: linear-gradient(160deg, var(--sheet) 0%, var(--sheet-2) 100%);
+        }
+
+        /* ---- 暗色模式：只覆盖 token（暖黑纸，不是蓝黑） ---- */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --paper: #171512;  --sheet: #1e1b17;  --sheet-2: #221e19;
+                --sheet-edge: #332e27;  --ink: #ece6dc;  --ink-2: #b9b0a3;
+                --ink-3: #978f82;   /* 同亮色理由：定稿 #8f8779 在暗色颗粒上仅 4.4:1 */
+                --accent: #c98a5e;  --accent-soft: rgba(201, 138, 94, .14);
+                --accent-2: #8fae86;  --rule: #332e27;  --warn: #d9a441;
+                --warn-soft: rgba(217, 164, 65, .12);  --danger: #d98570;
+                /* 暗色下实底变亮 → 压字换成深墨，保住 AA */
+                --on-accent: #1a1512;  --on-warn: #1a1512;  --on-ok: #1a1512;
+                /* 暗色颗粒：同一条纯 alpha 噪声叠在深底上会变成**亮**颗粒，
+                   所以透明度比亮色略高一点点才看得出纸感，同时保住 ink-3 的 AA */
+                --grain-opacity: .12;
+                --shadow-soft: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .38);
+                --shadow-toast: 0 8px 24px rgba(0, 0, 0, .55);
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* page 底色放 html 上：body 自己**不带任何背景**，于是 body::before
+           里 z-index:-1 的纸面层一定落在底色之上 —— 否则会被 body 的
+           不透明背景整个盖掉（第一版就踩了这个坑，颗粒完全看不见）。 */
+        html { background-color: var(--paper); }
+
+        body {
+            font-family: var(--font-ui);
+            min-height: 100vh;
+            color: var(--ink);
+            padding: var(--sp-5) var(--sp-5) 48px;
+            -webkit-font-smoothing: antialiased;
+        }
+        /* 全页纸面：一层里同时给「极淡双渐变」和「极淡噪点」。
+           合成顺序 = 底色 → 颗粒 → 渐变（渐变不透明，压在颗粒上），
+           相当于给纸色蒙了一层颗粒；整层再统一压到很低的 opacity，
+           既得到纸感，又不会把纸面拉暗、拖垮文字对比度。 */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            pointer-events: none;
+            background-image: var(--sheet-bg), var(--grain), var(--grain);
+            background-repeat: no-repeat, repeat, repeat;
+            background-size: cover, 300px 300px, 300px 300px;
+            background-position: center, 0 0, 149px 151px;   /* 第二层错位半块去打散规则感 */
+            opacity: var(--grain-opacity);
+        }
+        ::selection { background: var(--accent-soft); }
+
+        /* ================= 页头（跨整宽） ================= */
+        .page-head {
+            max-width: 1120px;
+            margin: 0 auto var(--sp-5);
+            padding-bottom: var(--sp-4);
+            border-bottom: 1px solid var(--rule);
+        }
+        h1 {
+            font-family: var(--font-serif);
+            font-size: 28px;
+            font-weight: 400;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+        .subtitle {
+            margin-top: 6px;
+            font-family: var(--font-serif);
+            font-size: 14px;
+            line-height: 1.7;
+            color: var(--ink-3);
+        }
+
+        /* ================= 两栏骨架 ================= */
+        .layout {
+            max-width: 1120px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 28px;
+            align-items: start;
+        }
+        @media (min-width: 1024px) {
+            .layout { grid-template-columns: 360px minmax(0, 1fr); gap: 40px; }
+            /* 宽屏滚动时参数保持可见 */
+            .controls { position: sticky; top: 24px; }
+        }
+
+        /* ================= 控制区 ================= */
+        .controls { display: flex; flex-direction: column; gap: var(--sp-5); }
+
+        /* 分区小标题：小号 + 字距（不用粗体大字） */
+        .sec-title {
+            font-family: var(--font-ui);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: .14em;
+            color: var(--ink-3);
+            margin-bottom: var(--sp-3);
+        }
+
+        .field-label {
+            display: block;
+            font-size: 13px;
+            color: var(--ink-2);
+            margin-bottom: 6px;
+        }
+        textarea {
+            width: 100%;
+            height: 132px;
+            padding: 14px 15px;
+            font-family: var(--font-serif);
+            font-size: 16px;
+            line-height: 1.85;
+            color: var(--ink);
+            /* 自带实底纸面 → 把全页那层颗粒挡在外面；文字落在这块干净纸面上，
+               对比度可以按纯 --sheet 算（见报告里的对比度实测）。 */
+            background-image: var(--sheet-bg);
+            background-repeat: no-repeat;
+            background-size: cover;
+            border: 1px solid var(--sheet-edge);
+            border-radius: var(--r-md);
+            resize: vertical;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        textarea::placeholder { color: var(--ink-3); opacity: .75; }
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        /* 空输入校验：内联红边 + 下方提示（替代 alert） */
+        textarea.invalid { border-color: var(--danger); }
+        textarea.invalid:focus { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(156, 59, 46, .14); }
+
+        .field-msg { min-height: 17px; margin-top: 6px; font-size: 12px; line-height: 1.65; color: var(--ink-3); }
+        .field-msg.err { color: var(--danger); }
+        .counter { margin-top: 2px; text-align: right; font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .counter.warn { color: var(--warn); font-weight: 600; }
+
+        /* ---- 滑条 ---- */
+        .slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+        .slider + .slider { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--rule); }
+        .slider-label { font-size: 13.5px; color: var(--ink-2); }
+        /* 墨色小徽章：accent-soft 底 + accent 字（不是裸数字） */
+        .badge {
+            min-width: 50px;
+            padding: 2px 9px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.55;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+        .slider-hint { grid-column: 1 / -1; font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
+        /* #maxHint 可点击（一键拉到当前允许的最大生成长度）—— 极克制的可交互暗示：
+           下划虚线 + hover 变强调色，不加背景/边框，避免破坏安静的排版节奏。 */
+        #maxHint { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+        #maxHint:hover { color: var(--accent); }
+        /* 上限被夹紧时的提示（用户的生成长度因输入变长而被下调） */
+        #maxHint.clamp-note { color: var(--warn); text-decoration-thickness: 2px; }
+
+        /* 自绘轨道与 thumb（原生外观整体替换）
+           --pct = 已填充比例，由 JS 在 syncSliders() 里写入；此处给个初始声明 */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            grid-column: 1 / -1;
+            width: 100%;
+            height: 20px;
+            margin: 2px 0 0;
+            background: transparent;
+            cursor: pointer;
+            accent-color: var(--accent);   /* 最后兜底 */
+            --pct: 50%;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px;
+            border-radius: 999px;
+            background: linear-gradient(var(--accent), var(--accent)) 0 50% / var(--pct, 50%) 4px no-repeat,
+                        var(--rule);
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px; height: 16px;
+            margin-top: -6px;
+            border-radius: 50%;
+            background: var(--sheet);
+            border: 2px solid var(--accent);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+        }
+        input[type="range"]::-moz-range-track {
+            height: 4px; border-radius: 999px; background: var(--rule);
+        }
+        input[type="range"]::-moz-range-progress {
+            height: 4px; border-radius: 999px; background: var(--accent);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--sheet);
+            border: 2px solid var(--accent);
+        }
+        input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 4px; }
+
+        /* ---- 按钮 ---- */
+        button {
+            font-family: var(--font-ui);
+            cursor: pointer;
+            transition: background .18s, border-color .18s, color .18s, transform .08s, opacity .18s;
+        }
+        .btn-primary {
+            width: 100%;
+            padding: 13px 18px;
+            border: 1px solid transparent;
+            border-radius: var(--r-md);
+            background: var(--accent);
+            color: var(--on-accent);
+            font-size: 15.5px;
+            font-weight: 600;
+            letter-spacing: .02em;
+        }
+        /* hover 微暗：用 filter 而不是 color-mix()，老浏览器也认 */
+        .btn-primary:hover:not(:disabled) { filter: brightness(.92); }
+        .btn-primary:active:not(:disabled) { transform: scale(.988); }
+        .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+        @media (prefers-color-scheme: dark) {
+            /* 暗色下"微暗"会糊掉，改成微亮 */
+            .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+        }
+
+        .btn-ghost {
+            padding: 9px 15px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            background: transparent;
+            color: var(--ink-2);
+            font-size: 12.5px;
+        }
+        .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .btn-ghost:active:not(:disabled) { transform: scale(.98); }
+        .btn-ghost:disabled { opacity: .5; cursor: not-allowed; }
+
+        /* 复制是阅读完之后最常用的动作 → 给一点赭墨分量，但仍小于主按钮 */
+        .btn-soft {
+            padding: 9px 16px;
+            border: 1px solid var(--accent);
+            border-radius: var(--r-sm);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12.5px;
+            font-weight: 600;
+        }
+        .btn-soft:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+        .btn-soft:active:not(:disabled) { transform: scale(.98); }
+        .btn-soft:disabled { opacity: .5; cursor: not-allowed; }
+
+        .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .row .grow { flex: 1; }
+        .kbd-hint { font-size: 11.5px; color: var(--ink-3); }
+        kbd {
+            font-family: var(--font-ui);
+            font-size: 10.5px;
+            padding: 1px 5px;
+            border: 1px solid var(--rule);
+            border-bottom-width: 2px;
+            border-radius: 4px;
+            background: var(--sheet);
+            color: var(--ink-2);
+        }
+
+        /* ---- 模型信息条 ---- */
+        .model-card {
+            padding: var(--sp-3) var(--sp-4);
+            background-image: var(--sheet-bg);
+            background-repeat: no-repeat;
+            background-size: cover;
+            border: 1px solid var(--sheet-edge);
+            border-radius: var(--r-md);
+            box-shadow: var(--shadow-soft);
+        }
+        .mc-head {
+            display: flex; align-items: flex-start; justify-content: space-between;
+            gap: var(--sp-2); flex-wrap: wrap; margin-bottom: 5px;
+        }
+        .mc-name { font-family: var(--font-serif); font-size: 14px; color: var(--ink); letter-spacing: -0.01em; }
+        .mc-device {
+            padding: 1px 9px;
+            border: 1px solid var(--rule);
+            border-radius: 999px;
+            color: var(--ink-3);
+            font-size: 10.5px;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+        .mc-arch { font-size: 11.5px; line-height: 1.75; color: var(--ink-2); }
+        .fallback-note {
+            margin-top: 10px;
+            padding: 9px 11px;
+            border: 1px solid var(--warn);
+            border-radius: var(--r-sm);
+            background: var(--warn-soft);
+            color: var(--warn);
+            font-size: 11.5px;
+            line-height: 1.7;
+        }
+
+        /* ================= 历史记录（控制区最底部 · 默认收起） ================= */
+        /* 折叠交给原生 <details>/<summary>：零 JS、零依赖、键盘可达。
+           收起时只占一行（summary），展开才占地方 —— 控制区已有 4 个滑条，很挤。
+           配色/字号/圆角全部沿用现有 token（--rule / --ink-2 / --ink-3 / --accent /
+           --accent-soft / --r-sm），不引入新的视觉风格。 */
+        #historyBox > summary {
+            cursor: pointer;
+            padding: 6px 0;
+            font-size: 12.5px;
+            color: var(--ink-2);
+        }
+        #historyBox > summary:hover,
+        #historyBox[open] > summary { color: var(--accent); }
+        .history-body {
+            margin-top: var(--sp-2);
+            padding-top: var(--sp-3);
+            border-top: 1px solid var(--rule);
+        }
+        .history-note { font-size: 11.5px; line-height: 1.7; color: var(--ink-3); }
+        /* 条目多了自己滚（限高，别把控制区撑到够不着） */
+        .history-list {
+            display: flex; flex-direction: column;
+            max-height: 240px;
+            margin-top: var(--sp-3);
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+        .history-list::-webkit-scrollbar { width: 9px; }
+        .history-list::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+        .history-list::-webkit-scrollbar-track { background: transparent; }
+        /* 单条：整行是一个 <button>（原生可点可键盘）；标题单行省略 + 右侧时间 */
+        .history-item {
+            display: flex; align-items: baseline; gap: var(--sp-2);
+            width: 100%;
+            padding: 7px 10px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            background: transparent;
+            color: var(--ink-2);
+            font-size: 12.5px;
+            line-height: 1.6;
+            text-align: left;
+        }
+        .history-item + .history-item { margin-top: 6px; }
+        .history-item:hover:not(:disabled),
+        .history-item:focus-visible {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+            outline: none;
+        }
+        .history-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .history-item-time { flex: none; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .history-foot { display: flex; justify-content: flex-end; margin-top: var(--sp-3); }
+
+        /* ================= 阅读区（书页） ================= */
+        .reading {
+            border-left: 1px solid var(--rule);   /* 书脊暗示，克制 */
+            padding-left: 28px;
+            min-width: 0;
+        }
+        @media (max-width: 1023px) {
+            .reading { border-left: none; padding-left: 0; border-top: 1px solid var(--rule); padding-top: var(--sp-5); }
+        }
+        .read-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: var(--sp-3); flex-wrap: wrap;
+            padding-bottom: 10px;
+            margin-bottom: var(--sp-4);
+            border-bottom: 1px solid var(--rule);
+        }
+        .read-meta {
+            font-size: 11.5px;
+            color: var(--ink-3);
+            line-height: 1.7;
+            font-variant-numeric: tabular-nums;
+        }
+        .read-body {
+            max-height: 60vh;
+            overflow-y: auto;
+            overflow-wrap: break-word;
+            scroll-behavior: smooth;
+            scrollbar-width: thin;
+        }
+        .read-body::-webkit-scrollbar { width: 9px; }
+        .read-body::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
+        .read-body::-webkit-scrollbar-track { background: transparent; }
+
+        /* 正文：衬线 17px / 行高 1.9 / 最大行宽 720px */
+        .article { max-width: 720px; font-family: var(--font-serif); font-size: 17px; line-height: 1.9; color: var(--ink); }
+        .article p { text-indent: 2em; margin: 0 0 1em; }
+        .article p:last-child { margin-bottom: 0; }
+        .article.error-text { color: var(--warn); }
+        .article.error-text p.err-what {
+            text-indent: 0;
+            padding: 12px 14px;
+            margin-bottom: .8em;
+            border-left: 3px solid var(--warn);
+            border-radius: 0 var(--r-sm) var(--r-sm) 0;
+            background: var(--warn-soft);
+            font-size: 15.5px;
+            line-height: 1.8;
+            font-family: var(--font-ui);
+        }
+        .article.error-text p.err-how { text-indent: 0; font-family: var(--font-ui); font-size: 13px; line-height: 1.85; color: var(--ink-2); }
+
+        /* 空态：一句引导语 + 两个可点的示例开头 */
+        .empty-state { max-width: 560px; padding: 26px 0 30px; }
+        .empty-state h2 {
+            font-family: var(--font-serif);
+            font-size: 21px;
+            font-weight: 400;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+        .empty-state > p { margin-top: 10px; font-family: var(--font-serif); font-size: 15px; line-height: 1.9; color: var(--ink-2); }
+        .examples { margin-top: 22px; display: flex; flex-direction: column; }
+        .examples-label { font-size: 10.5px; letter-spacing: .14em; color: var(--ink-3); margin-bottom: 8px; }
+        .example {
+            padding: 11px 14px;
+            border: 1px solid var(--rule);
+            border-radius: var(--r-sm);
+            font-family: var(--font-serif);
+            font-size: 15.5px;
+            line-height: 1.75;
+            color: var(--ink-2);
+            cursor: pointer;
+            transition: border-color .18s, color .18s, background .18s;
+        }
+        .example + .example { margin-top: 10px; }
+        .example:hover, .example:focus-visible {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+            outline: none;
+        }
+        .example::before { content: '「'; color: var(--ink-3); }
+        .example::after  { content: '」'; color: var(--ink-3); }
+
+        /* 加载态：骨架行 + 呼吸动画（替掉"模型正在思考…"） */
+        .skeleton { max-width: 720px; padding-top: 6px; }
+        .skeleton-label { font-size: 11.5px; letter-spacing: .1em; color: var(--ink-3); margin-bottom: 18px; }
+        .sk-line {
+            height: 11px;
+            margin-bottom: 18px;
+            border-radius: 3px;
+            background: var(--rule);
+            animation: sk-breathe 1.5s ease-in-out infinite;
+        }
+        @keyframes sk-breathe { 0%, 100% { opacity: .38; } 50% { opacity: .95; } }
+
+        /* ================= 页内 toast（替代 alert） ================= */
+        .toast-host {
+            position: fixed;
+            left: 50%;
+            bottom: 28px;
+            transform: translateX(-50%);
+            display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+            z-index: 999;
+            pointer-events: none;
+        }
+        .toast {
+            max-width: 88vw;
+            padding: 10px 18px;
+            border-radius: 999px;
+            background: var(--ink);
+            color: var(--sheet);
+            font-size: 13px;
+            text-align: center;
+            box-shadow: var(--shadow-toast);
+            animation: toast-in .22s ease-out;
+        }
+        .toast.err { background: var(--danger); color: var(--on-warn); }
+        .toast.ok  { background: var(--accent-2); color: var(--on-ok); }
+        .toast.hide { animation: toast-out .32s ease-in forwards; }
+        @keyframes toast-in  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+        @keyframes toast-out { to { opacity: 0; transform: translateY(8px); } }
+
+        .page-foot {
+            max-width: 1120px;
+            margin: var(--sp-6) auto 0;
+            padding-top: var(--sp-4);
+            border-top: 1px solid var(--rule);
+            text-align: center;
+            font-size: 11.5px;
+            color: var(--ink-3);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .read-body { scroll-behavior: auto; }
+            .toast, .toast.hide { animation: none; }
+            .sk-line { animation: none; opacity: .6; }
+        }
+    
