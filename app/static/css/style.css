@@ -496,14 +496,33 @@
                取了 280（而非 345）是**刻意留一点余量**：这样阅读区能更饱满，
                代价是整页可能需要多滚 ~65px —— 对"读书页"来说这笔交易划算。
                ⚠️ 这个数字是取舍，不是实测出来的唯一正解；觉得阅读区太高/太矮就调它。
-               下限 340px：矮窗口（< ~620px）里不至于被压成一条。
                dvh 版本处理移动端地址栏伸缩；不支持的浏览器用上面那行 vh 回退。 */
             max-height: max(340px, calc(100vh - 280px));
             max-height: max(340px, calc(100dvh - 280px));
+            /* ★ 高度**下限**（与上面的上限是两件事，别混淆）：
+               上限解决"大屏浪费"，下限解决"空态显得空"。
+               空态内容本身只有约 200px 高，没有下限时右栏在生成前就早早结束，
+               而左栏有 700px（模型卡+输入+按钮+4 个滑块）→ 右侧一大片空白。
+               下限让阅读区先把"页面"占住，读起来像"一张待写的纸"。
+               上限与下限的交叠检查：600px 视口 → min 324 / max 340（min 不越界）；
+               781px → 421 / 501；1200px → 480 / 920。CSS 规定 min-height 优先，
+               所以万一哪天越界了也只是"比上限高一点"，不会算错。 */
+            min-height: min(54vh, 480px);
             overflow-y: auto;
             overflow-wrap: break-word;
             scroll-behavior: smooth;
             scrollbar-width: thin;
+        }
+        /* 空态垂直居中：让"还没有故事"落在阅读区中间，而不是顶在上面留一大片空。
+           ⚠️ 只在**空态**居中 —— 正文绝不能居中，长文必须从顶部开始且可正常滚动
+              （flex 居中 + 溢出会被裁掉顶部，这是 flexbox 的经典坑）。
+           用 :has() 声明式判断，省掉 JS 里维护一个 state 类；
+           老浏览器不支持 :has() 时只是**不居中**（上面的 min-height 仍生效），
+           属于优雅降级，不会坏。 */
+        .read-body:has(> #emptyState:not([hidden])) {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
         .read-body::-webkit-scrollbar { width: 9px; }
         .read-body::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; }
