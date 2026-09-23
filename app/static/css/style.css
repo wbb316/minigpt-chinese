@@ -124,6 +124,19 @@
               所以 `!important` 不会和脚本打架。 */
         [hidden] { display: none !important; }
 
+        /* 视觉上隐藏、但**保留给读屏软件**（不是 display:none —— 那会连读屏一起藏掉）。
+           用于 #liveStatus 状态播报区。用 1px + clip 这套经典写法，
+           而不是 left:-9999px（后者在 RTL/长页面上可能产生意外的滚动区域）。 */
+        .sr-only {
+            position: absolute;
+            width: 1px; height: 1px;
+            padding: 0; margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
         /* ================= 页头（跨整宽） ================= */
         .page-head {
             max-width: 1120px;
@@ -373,6 +386,18 @@
             text-transform: uppercase;
         }
         .mc-arch { font-size: 11.5px; line-height: 1.75; color: var(--ink-2); }
+        /* 权重目录：比规格更次要的一行。用等宽字体提示"这是一条路径"，
+           而不是再一条规格描述 —— 视觉上就把它和上面的参数区分开。 */
+        .mc-path {
+            margin-top: 7px;
+            padding-top: 7px;
+            border-top: 1px dashed var(--rule);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 10.5px;
+            line-height: 1.6;
+            color: var(--ink-3);
+            word-break: break-all;
+        }
         .fallback-note {
             margin-top: 10px;
             padding: 9px 11px;
@@ -462,7 +487,19 @@
             font-variant-numeric: tabular-nums;
         }
         .read-body {
-            max-height: 60vh;
+            /* ★ 2026-09-21：从写死的 60vh 改为随视口自适应。
+               原来固定 60vh 的问题：1200px 高的屏幕上明明有空间却只给 720px，
+               而左栏（约 835px）更长 → 右边一大片空白，两栏高度明显失衡。
+               现在按"视口高 − 页面其余部分"给高度：
+                 body padding 24 + 页头 ~105 + read-head ~45 + 动作条 ~58
+                 + 页脚 ~65 + body padding 48 ≈ 345px
+               取了 280（而非 345）是**刻意留一点余量**：这样阅读区能更饱满，
+               代价是整页可能需要多滚 ~65px —— 对"读书页"来说这笔交易划算。
+               ⚠️ 这个数字是取舍，不是实测出来的唯一正解；觉得阅读区太高/太矮就调它。
+               下限 340px：矮窗口（< ~620px）里不至于被压成一条。
+               dvh 版本处理移动端地址栏伸缩；不支持的浏览器用上面那行 vh 回退。 */
+            max-height: max(340px, calc(100vh - 280px));
+            max-height: max(340px, calc(100dvh - 280px));
             overflow-y: auto;
             overflow-wrap: break-word;
             scroll-behavior: smooth;

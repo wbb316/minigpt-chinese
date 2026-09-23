@@ -18,13 +18,20 @@
     <div class="layout">
         <!-- ==================== 控制区 ==================== -->
         <aside class="controls">
-            <!-- 模型信息条：一眼看清当前加载了哪个权重；回退时显眼提示 -->
+            <!-- 模型信息条：一眼看清当前加载了哪个权重；回退时显眼提示。
+                 ★ 2026-09-21 改：主标题从「当前模型：<目录名>」改为**已验证的规格**
+                 （参数量），目录名单独一行并明确标注为"权重目录"。
+                 原因：目录名 `150M参数v3+1.5Btokens` 里的 "1.5B tokens" 与实际训练量
+                 （2.93B）差约一倍（目录名是存档时的旧名），而 "150M参数" 又和真实的
+                 148.1M 并排出现 —— 一屏三个数互相打架，用户会以为页面在虚报。
+                 目录名本身没变，只是不再冒充"模型规格"。 -->
             <section class="model-card" id="modelCard">
                 <div class="mc-head">
                     <span class="mc-name" id="miName">模型信息加载中…</span>
                     <span class="mc-device" id="miDevice" hidden></span>
                 </div>
                 <div class="mc-arch" id="miArch">正在从后端读取当前权重规格…</div>
+                <div class="mc-path" id="miPath" hidden></div>
             </section>
 
             <section>
@@ -34,6 +41,34 @@
                 <!-- 校验/计数：内联提示取代 alert -->
                 <div class="field-msg" id="promptMsg"></div>
                 <div class="counter" id="promptCount">0 字</div>
+            </section>
+
+            <!-- ==================== 生成动作 ====================
+                 ★ 紧跟输入框，**不放在解码参数之后**（2026-09-21 改）。
+                 原因：原先它在 4 个滑块下面，左栏总高约 870px，而笔记本视口常只有
+                 700~800px → 「开始续写」在首屏之外，用户第一眼看到一堆参数却找不到
+                 "开始"。动作紧跟输入才是符合直觉的顺序（输入 → 提交），参数退居其后
+                 作为"进阶设置"。
+                 ⚠️ 别再把它挪回参数之后 —— 这是可用性问题，不是审美偏好。 -->
+            <section>
+                <button class="btn-primary" id="genBtn" type="button">开始续写</button>
+                <!-- 「停止生成」：只在请求进行中可见（空闲时 hidden）。
+                     沿用 .btn-ghost 档位（与「清空」同级），不抢主按钮视线。
+                     ★ 文案是「停止生成」而不是「停止等待」（2026-09-21 流式改造后改的）：
+                     流式用 SSE + 同步生成器，客户端一断开，starlette 就不再 next()
+                     那个生成器 → 剩余步数**根本不会执行**。
+                     判据是 **CPU**（这是实测过的，别再引用"日志显示算了几步"）：
+                     中止后 300s 内进程 CPU 增量 0.3%（纯空转噪声），且服务端
+                     `已算` 恰好等于客户端已消费的 token 数 —— 一步都没多算。
+                     ⚠️ 不要拿那条 `[stream] 提前结束` 日志当证据：starlette 只是不再
+                     拉取，并不保证马上 close() 生成器（实测收尾日志 2.8s~266s 才打，
+                     静默时甚至 300s 都不打）。详见 abortGenerate()。 -->
+                <div class="row" id="abortRow" style="margin-top:10px; justify-content:center" hidden>
+                    <button class="btn-ghost" id="abortBtn" type="button">停止生成</button>
+                </div>
+                <div class="row" style="margin-top:12px; justify-content:center">
+                    <span class="kbd-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速提交</span>
+                </div>
             </section>
 
             <section>
@@ -76,27 +111,6 @@
                 </div>
             </section>
 
-            <section>
-                <button class="btn-primary" id="genBtn" type="button">开始续写</button>
-                <!-- 「停止生成」：只在请求进行中可见（空闲时 hidden）。
-                     沿用 .btn-ghost 档位（与「清空」同级），不抢主按钮视线。
-                     ★ 文案是「停止生成」而不是「停止等待」（2026-09-21 流式改造后改的）：
-                     流式用 SSE + 同步生成器，客户端一断开，starlette 就不再 next()
-                     那个生成器 → 剩余步数**根本不会执行**。
-                     判据是 **CPU**（这是实测过的，别再引用"日志显示算了几步"）：
-                     中止后 300s 内进程 CPU 增量 0.3%（纯空转噪声），且服务端
-                     `已算` 恰好等于客户端已消费的 token 数 —— 一步都没多算。
-                     ⚠️ 不要拿那条 `[stream] 提前结束` 日志当证据：starlette 只是不再
-                     拉取，并不保证马上 close() 生成器（实测收尾日志 2.8s~266s 才打，
-                     静默时甚至 300s 都不打）。详见 abortGenerate()。 -->
-                <div class="row" id="abortRow" style="margin-top:10px; justify-content:center" hidden>
-                    <button class="btn-ghost" id="abortBtn" type="button">停止生成</button>
-                </div>
-                <div class="row" style="margin-top:12px; justify-content:center">
-                    <span class="kbd-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速提交</span>
-                </div>
-            </section>
-
             <!-- ==================== 历史记录（控制区最底部） ====================
                  放在最后：窄屏单栏堆叠时它自然落到最下面，不需要额外结构。
                  默认**收起**（<details> 不带 open）→ 只占一行，不挤滑条。
@@ -116,8 +130,14 @@
             </section>
         </aside>
 
-        <!-- ==================== 阅读区 ==================== -->
-        <main class="reading" aria-live="polite">
+        <!-- ==================== 阅读区 ====================
+             ⚠️ 这里**不能**加 aria-live（2026-09-21 移除）。
+             流式生成时正文每 80ms 重绘一次全文，把 aria-live 挂在这个大容器上，
+             读屏软件会把每一次重绘都念一遍 —— 用户听到的是持续几秒的噪声。
+             改为：正文容器保持安静，另设一个 sr-only 状态区（见文件底部
+             #liveStatus）只播报"正在续写 / 已完成，共 N 字 / 已停止"这类短句。
+             读屏用户要读正文，可 Tab 到 .read-body（它有 tabindex="0"）。 -->
+        <main class="reading">
             <div class="read-head">
                 <div class="sec-title" style="margin:0">续写正文</div>
                 <!-- 顶部细栏：字数 / 耗时 / 参数，小字号不抢戏 -->
@@ -165,6 +185,12 @@
     <footer class="page-foot">MiniGPT-Chinese · 从零实现的 Transformer</footer>
 
     <div class="toast-host" id="toastHost" aria-live="polite"></div>
+
+    <!-- 屏幕阅读器状态播报区（视觉上不可见，见 .sr-only）。
+         存在的理由：正文容器**故意**不带 aria-live（流式每 80ms 重绘会刷屏），
+         所以"开始了/完成了/停了"这类**状态变化**需要一个专用的播报出口。
+         只写短句（谁在播报 vs 正文内容，两者分开是刻意的）。 -->
+    <div class="sr-only" id="liveStatus" role="status" aria-live="polite"></div>
 
     <!-- 逻辑已拆到 app/static/js/app.js（内容与原内联 script 块**逐字节相同**）。
          ⚠️ 必须留在 </body> 前：app.js 没有 DOMContentLoaded 包裹，

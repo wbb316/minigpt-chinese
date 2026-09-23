@@ -5,7 +5,7 @@
         const $ = (id) => document.getElementById(id);
         const el = {
             subtitle: $('subtitle'), miName: $('miName'), miDevice: $('miDevice'),
-            miArch: $('miArch'), modelCard: $('modelCard'),
+            miArch: $('miArch'), modelCard: $('modelCard'), miPath: $('miPath'),
             prompt: $('prompt'), promptMsg: $('promptMsg'), promptCount: $('promptCount'),
             temp: $('temp'), topp: $('topp'), rep: $('rep'), maxTokens: $('maxTokens'),
             maxHint: $('maxHint'),
@@ -23,7 +23,23 @@
             historyFoot: $('historyFoot'), historyClearBtn: $('historyClearBtn'),
             ex1: $('ex1'), ex2: $('ex2'),
             toastHost: $('toastHost'),
+            // 读屏状态播报区（sr-only）。正文容器刻意不带 aria-live，见下面的 announce()
+            liveStatus: $('liveStatus'),
         };
+
+        // ---------------------------------------------------------------
+        // 读屏播报（accessibility）
+        // ---------------------------------------------------------------
+        // ★ 为什么需要它：正文容器 `<main class="reading">` **故意**不带 aria-live。
+        //   流式生成时正文每 80ms 重绘一次全文，若把 aria-live 挂在大容器上，
+        //   读屏软件会把每一次重绘都念出来 —— 用户听到的是持续数秒的噪声，
+        //   而且永远念不完。所以正文保持安静，**状态变化**另走这个专用出口。
+        //   只写短句：开始 / 完成（含字数）/ 停止 / 失败。
+        // ⚠️ 别把正文内容写进来 —— 那等于把刚拆掉的噪声又装回去。
+        function announce(msg) {
+            if (!el.liveStatus) return;      // 元素缺失时静默降级，绝不因此报错
+            el.liveStatus.textContent = msg;
+        }
 
         // ===== 模型信息（block_size / max_tokens 默认值的事实来源） =====
         let MODEL = null;          // null = 还没拿到
@@ -92,6 +108,7 @@
             setHidden(el.article, true);
             el.article.className = 'article';
             el.article.textContent = '';
+            announce('正在续写');
         }
 
         // ★ 阅读感的最大来源：把生成文本**按段落**渲染成多个 <p>。
@@ -121,7 +138,11 @@
             setHidden(el.article, false);
         }
         function showResult(text) { fillArticle(text, false); }
-        function showError(msg, how) { fillArticle(msg + '\n\n' + how, true); }
+        function showError(msg, how) {
+            fillArticle(msg + '\n\n' + how, true);
+            // 错误也必须播报：正文容器的 aria 没了之后，读屏用户否则完全不知道失败了
+            announce('生成失败：' + msg);
+        }
 
         // ---------------------------------------------------------------
         // 滑条：数值回显 + 已填充比例（自绘轨道靠 --pct 变量）
@@ -290,11 +311,18 @@
                     + (m.ff_hidden ? '(h=' + m.ff_hidden + ')' : ''),
                 m.position_encoding === 'rope' ? 'RoPE' : '正弦位置编码',
                 'vocab ' + m.vocab_size, 'block ' + m.block_size,
-                '参数量 ' + m.params_human,
             ].join(' · ');
 
-            el.miName.textContent = '当前模型：' + m.ckpt_name;
+            // ★ 标题用**从 state_dict 实际推断出来的**参数量，不用 ckpt_name。
+            //   理由见 index.html 模型卡的注释：目录名里的 "1.5Btokens" 与实际训练量
+            //   不符，拿它当"当前模型"的标题等于在页面上报了个错数。
+            //   `params_human` 来自 gpt.get_num_params()（tie 去重后），是可信的。
+            el.miName.textContent = m.params_human + ' 参数';
             el.miArch.textContent = arch;
+            // 目录名降级为"路径"：保留可追溯性，但明确它不是规格描述
+            el.miPath.textContent = '权重目录：' + m.ckpt_name;
+            el.miPath.title = '权重所在目录名（存档时的命名，不一定反映实际参数量或训练量）';
+            setHidden(el.miPath, false);
             el.miDevice.textContent = m.device;
             setHidden(el.miDevice, false);
             el.subtitle.textContent = '从零训练的中文续写模型 · ' + m.display;
@@ -526,6 +554,10 @@
             el.actions.hidden = false;
             pushHistory(streamPrompt, fullText, params);
             updateContinueBtn();
+            // 流式**结束时播报一次**——中途每 80ms 的重绘一律不播报（见 announce 的说明）
+            announce(interrupted
+                ? '已停止生成，已保留写出的 ' + fullText.length + ' 字'
+                : '续写完成，共 ' + fullText.length + ' 字');
             // #debug 探针：加这个 hash 打开后，控制台能看到"首字延迟 / 帧数 / 总耗时"，
             // 不用开 devtools 网络面板就能确认"文字真的是一帧一帧来的"。
             // 平时（无 #debug）零开销、不打印任何东西。
@@ -751,6 +783,8 @@
                     repetition_penalty: rep, max_tokens: maxTokens,
                 });
                 updateContinueBtn();   // 有完整结果了 → 「接着写」可用
+                // 回退路径（/generate 一次性返回）同样只播报一次
+                announce('续写完成，共 ' + data.text.length + ' 字');
 
                 // 生成完成后把视线带到结果开头（长文时用户不用自己找）
                 scrollToReading();
