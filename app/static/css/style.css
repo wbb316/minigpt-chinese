@@ -109,6 +109,21 @@
         }
         ::selection { background: var(--accent-soft); }
 
+        /* ================= 基础修正 ================= */
+        /* ★ `hidden` 属性必须显式兜住，否则它会被**任何**带 display 的 class 压掉。
+           原理：`hidden` 只靠浏览器默认样式表 `[hidden]{display:none}` 生效，
+                 而**作者样式优先于默认样式，与特异度无关** —— 所以
+                 `.row{display:flex}`（下方 322 行）会直接让 `class="row" hidden` 可见。
+           实测（2026-09-21，用户截图 + 全量扫描）：有 3 个元素因此一直显示 ——
+             · #actions    接着写 / 复制正文 / 清空   → 没有正文时也显示
+             · #abortRow   停止生成                 → 空闲时也显示
+             · #historyFoot 清除历史                → 没有历史时也显示
+           JS 侧其实一直在正确地设 hidden（setHidden() 用 setAttribute），是被 CSS 反杀的。
+           ⚠️ `!important` 在这里是必要的，不是随手加的：它保证无论将来给这些元素
+              挂上什么 display 的 class，hidden 都说了算。JS 全文件不碰 style.display，
+              所以 `!important` 不会和脚本打架。 */
+        [hidden] { display: none !important; }
+
         /* ================= 页头（跨整宽） ================= */
         .page-head {
             max-width: 1120px;
